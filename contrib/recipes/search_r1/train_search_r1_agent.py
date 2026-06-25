@@ -147,7 +147,7 @@ def config_train_qwen3_8b() -> Dict[str, Any]:
 
     config = deepcopy(RL_TRAINING_CONFIG)
     config["actor_rollout_ref"]["model"]["path"] = "Qwen/Qwen3-8B"
-    config["actor_rollout_ref"]["rollout"]["gpu_memory_utilization"] = 0.6
+    config["actor_rollout_ref"]["rollout"]["gpu_memory_utilization"] = 0.85
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["param_offload"] = False
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["optimizer_offload"] = False
     config["actor_rollout_ref"]["ref"]["fsdp_config"]["param_offload"] = False
