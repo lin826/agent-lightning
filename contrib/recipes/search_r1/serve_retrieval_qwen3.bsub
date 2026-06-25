@@ -1,0 +1,42 @@
+#!/bin/bash
+#BSUB -J serve_bm25_qwen3
+#BSUB -G grp_runtime
+#BSUB -q normal
+#BSUB -n 64
+#BSUB -R "span[hosts=1] rusage[mem=512GB]"
+#BSUB -gpu "num=8:mode=shared:j_exclusive=yes:gmodel=NVIDIAH10080GBHBM3"
+#BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_qwen3.%J.out
+#BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_qwen3.%J.err
+
+# Dedicated BM25 retrieval server for the Qwen3-8B training run.
+# Writes to a qwen3-specific addr file so it does not conflict with the
+# Qwen2.5-7B server started by serve_retrieval.bsub.
+
+set -euo pipefail
+
+PPLRL=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl
+PYTHON=${PPLRL}/.venv/bin/python
+WIKI=/proj/inf-scaling/zwhong/projs/asmi/code/dsl-agent/dspy_tutorial/wiki2017
+RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1
+ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_qwen3.txt
+
+export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
+export HF_HOME=/u/zwhong/.cache/huggingface
+export TRITON_CACHE_DIR=${PPLRL}/tmp/triton
+export XDG_CACHE_HOME=${PPLRL}/tmp/xdg
+
+mkdir -p "${TRITON_CACHE_DIR}" "${XDG_CACHE_HOME}" "${RECIPE}/outputs"
+rm -f "${ADDR_FILE}"
+
+cd "${PPLRL}"
+
+${PYTHON} scripts/torch_bm25_server.py \
+    --wiki-dir "${WIKI}" --bm25-device cuda --addr-file "${ADDR_FILE}" &
+SRV_PID=$!
+
+${PYTHON} scripts/gpu_keepalive.py &
+KEEP_PID=$!
+
+trap "kill ${KEEP_PID} 2>/dev/null; rm -f ${ADDR_FILE}" EXIT
+
+wait ${SRV_PID}

@@ -76,6 +76,27 @@ The retrieval server implementation is based on `search_r1/search/retrieval_serv
 
 ---
 
+## Run RL Training (GRPO) with Qwen2.5-7B-Instruct on H100 80 GB GPUs
+
+The `qwen7b` configuration targets `Qwen/Qwen2.5-7B-Instruct` and is optimised for nodes equipped with **NVIDIA H100 80 GB HBM3** GPUs. Compared to the default configuration it:
+
+* raises `gpu_memory_utilization` to **0.6** so vLLM can use more of the available VRAM for KV-cache,
+* **disables CPU offloading** for both actor and reference model parameters and the actor optimiser states, eliminating the PCIe bottleneck on each training step.
+
+1. **Start Ray**
+
+   ```bash
+   bash ../../scripts/restart_ray.sh
+   ```
+
+2. **Start the Training Server**
+
+   ```bash
+   python train_search_r1_agent.py qwen7b
+   ```
+
+---
+
 ## Benchmark Results
 
 We evaluated Search-R1 across seven diverse question-answering benchmarks, covering both General QA (NQ, TriviaQA, PopQA) and complex multi-hop reasoning tasks (HotpotQA, 2WikiMultiHopQA, Musique, and Bamboogle).

@@ -115,9 +115,43 @@ def config_train_fast() -> Dict[str, Any]:
 
 
 def config_train_qwen() -> Dict[str, Any]:
-    """A configuration for training with Qwen-2.5."""
+    """A configuration for training with Qwen-2.5-Coder-1.5B-Instruct."""
 
     config = deepcopy(RL_TRAINING_CONFIG)
+    return config
+
+
+def config_train_qwen7b() -> Dict[str, Any]:
+    """A configuration for training with Qwen2.5-7B-Instruct on H100 80GB GPUs.
+
+    Disables CPU offloading and raises vLLM GPU memory utilization to take
+    advantage of the larger VRAM available on H100 80GB HBM3 GPUs.
+    """
+
+    config = deepcopy(RL_TRAINING_CONFIG)
+    config["actor_rollout_ref"]["model"]["path"] = "Qwen/Qwen2.5-7B-Instruct"
+    config["actor_rollout_ref"]["rollout"]["gpu_memory_utilization"] = 0.6
+    config["actor_rollout_ref"]["actor"]["fsdp_config"]["param_offload"] = False
+    config["actor_rollout_ref"]["actor"]["fsdp_config"]["optimizer_offload"] = False
+    config["actor_rollout_ref"]["ref"]["fsdp_config"]["param_offload"] = False
+    config["trainer"]["experiment_name"] = "searchr1_qwen7b"
+    return config
+
+
+def config_train_qwen3_8b() -> Dict[str, Any]:
+    """A configuration for training with Qwen3-8B on H100 80GB GPUs.
+
+    Qwen3-8B uses the same Hermes tool-call format as Qwen2.5.  Offloading is
+    disabled to exploit the full 80 GB VRAM on H100 HBM3 nodes.
+    """
+
+    config = deepcopy(RL_TRAINING_CONFIG)
+    config["actor_rollout_ref"]["model"]["path"] = "Qwen/Qwen3-8B"
+    config["actor_rollout_ref"]["rollout"]["gpu_memory_utilization"] = 0.6
+    config["actor_rollout_ref"]["actor"]["fsdp_config"]["param_offload"] = False
+    config["actor_rollout_ref"]["actor"]["fsdp_config"]["optimizer_offload"] = False
+    config["actor_rollout_ref"]["ref"]["fsdp_config"]["param_offload"] = False
+    config["trainer"]["experiment_name"] = "searchr1_qwen3_8b"
     return config
 
 
@@ -151,14 +185,24 @@ def main() -> None:
 
     parser.add_argument(
         "config",
-        choices=["fast", "qwen", "llama"],
-        help="Training configuration: 'fast' (CI testing), 'qwen' (Qwen-2.5-Coder-1.5B), 'llama' (LLaMA-3.2-3B-Instruct)",
+        choices=["fast", "qwen", "qwen7b", "qwen3_8b", "llama"],
+        help=(
+            "Training configuration: 'fast' (CI testing), 'qwen' (Qwen-2.5-Coder-1.5B), "
+            "'qwen7b' (Qwen2.5-7B-Instruct, H100 80 GB), 'qwen3_8b' (Qwen3-8B, H100 80 GB), "
+            "'llama' (LLaMA-3.2-3B-Instruct)"
+        ),
     )
 
     args = parser.parse_args()
 
     # Get the appropriate configuration
-    config_functions = {"fast": config_train_fast, "qwen": config_train_qwen, "llama": config_train_llama}
+    config_functions = {
+        "fast": config_train_fast,
+        "qwen": config_train_qwen,
+        "qwen7b": config_train_qwen7b,
+        "qwen3_8b": config_train_qwen3_8b,
+        "llama": config_train_llama,
+    }
 
     config = config_functions[args.config]()
 

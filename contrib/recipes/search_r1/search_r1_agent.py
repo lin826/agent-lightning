@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple, TypedDict, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import pandas as pd
 import requests
@@ -20,13 +20,6 @@ logger = configure_logger(name=__name__)
 # Copied and adapted from https://github.com/PeterGriffinJin/Search-R1/blob/main/scripts/data_process/nq_search.py
 INSTRUCTION_FORMAT = """Answer the given question. You must conduct reasoning inside <think> and </think> first every time you get new information. After reasoning, if you find you lack some knowledge, you can call a search engine by <search> query </search> and it will return the top searched results between <information> and </information>. You can search as many times as your want. If you find no further external knowledge needed, you can directly provide the answer inside <answer> and </answer>, without detailed illustrations. For example, <answer> Beijing </answer>. Question: """
 
-
-class Document(TypedDict):
-    contents: str
-
-
-class RetrievalItem(TypedDict):
-    document: Document
 
 
 def eval(prediction: str, ground_truth: List[str]) -> float:
@@ -74,22 +67,41 @@ def execute_response(response: str, do_search: bool = True) -> str:
         )
 
 
+def _retrieval_url() -> str:
+    """Return the retrieval server base URL.
+
+    Resolution order: ``RETRIEVAL_SERVER_URL`` env var → URL read from the
+    file named by ``RETRIEVAL_SERVER_ADDR_FILE`` → localhost fallback.
+    """
+    url = os.environ.get("RETRIEVAL_SERVER_URL", "")
+    if url:
+        return url.rstrip("/")
+    addr_file = os.environ.get("RETRIEVAL_SERVER_ADDR_FILE", "")
+    if addr_file and os.path.isfile(addr_file):
+        with open(addr_file) as f:
+            return f.read().strip().rstrip("/")
+    return "http://127.0.0.1:8000"
+
+
 def retrieve_doc(query: str) -> str:
-    payload: Dict[str, Any] = {"queries": [query], "topk": 3, "return_scores": True}
-    response = requests.post("http://127.0.0.1:8000/retrieve", json=payload)
+    url = _retrieval_url()
+    response = requests.post(f"{url}/search", json={"query": query})
     response.raise_for_status()
     json_resp: Dict[str, Any] = cast(Dict[str, Any], response.json())
-    retrieval_result: List[RetrievalItem] = cast(List[RetrievalItem], json_resp["result"][0])
-    retrieval_result_str = passages2string(retrieval_result)
-    return retrieval_result_str
+    passages: List[str] = cast(List[str], json_resp["passages"])
+    # Drop the trailing "Other retrieved pages have titles: …" summary entry.
+    full_passages = [p for p in passages if not p.startswith("Other retrieved pages")]
+    return passages2string(full_passages[:3])
 
 
-def passages2string(retrieval_result: List[RetrievalItem]) -> str:
+def passages2string(passages: List[str]) -> str:
+    """Format a list of ``"Title | content"`` passage strings for the prompt."""
     format_reference = ""
-    for idx, doc_item in enumerate(list(retrieval_result)):
-        content = doc_item["document"]["contents"]
-        title = content.split("\n")[0]
-        text = "\n".join(content.split("\n")[1:])
+    for idx, passage in enumerate(passages):
+        if " | " in passage:
+            title, text = passage.split(" | ", 1)
+        else:
+            title, text = f"Doc {idx + 1}", passage
         format_reference += f"Doc {idx+1}(Title: {title}) {text}\n"
     return format_reference
 
