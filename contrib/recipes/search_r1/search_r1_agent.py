@@ -320,10 +320,15 @@ class SearchR1RewriteAgent(LitAgent[Dict[str, Any]]):
             return None
 
         end_time_rollout = time.time()
-        reward_score = compute_shaped_reward(
-            rollout_content, answer_list, retrieved_passages, alpha=self.alpha, beta=self.beta
-        )
-        logger.info("[Rollout %s] Reward: %s (alpha=%.1f, beta=%.1f)", rollout_id, reward_score, self.alpha, self.beta)
+
+        if rollout.mode == "train":
+            reward_score = compute_shaped_reward(
+                rollout_content, answer_list, retrieved_passages, alpha=self.alpha, beta=self.beta
+            )
+        else:
+            reward_score = float(compute_score_em(rollout_content, answer_list))
+
+        logger.info("[Rollout %s] Reward: %s (mode=%s)", rollout_id, reward_score, rollout.mode)
         logger.info("[Rollout %s] Time taken for rollout: %.2f seconds", rollout_id, end_time_rollout - start_time)
         logger.info(
             "question: {} answer: {} ground_truth: {} reward: {}".format(
