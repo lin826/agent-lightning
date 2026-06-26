@@ -14,6 +14,11 @@ from search_r1_agent import SearchR1Agent
 
 import agentlightning as agl
 
+# Absolute root for checkpoints. Each experiment variant writes to its own
+# subdirectory so concurrent jobs never overwrite each other's
+# ``global_step_N`` checkpoints (see "Checkpointing & Resume" in AGENTS.md).
+CHECKPOINT_ROOT = "/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/checkpoints"
+
 RL_TRAINING_CONFIG: Dict[str, Any] = {
     "algorithm": {
         "adv_estimator": "grpo",
@@ -137,6 +142,7 @@ def config_train_qwen7b() -> Dict[str, Any]:
     config["data"]["val_files"] = "data/test_dev.parquet"
     config["data_source_filter"] = "hotpotqa"
     config["trainer"]["experiment_name"] = "searchr1_qwen7b"
+    config["trainer"]["default_local_dir"] = f"{CHECKPOINT_ROOT}/searchr1_qwen7b"
     return config
 
 
@@ -156,6 +162,7 @@ def config_train_qwen3_8b() -> Dict[str, Any]:
     config["data"]["val_files"] = "data/test_dev.parquet"
     config["data_source_filter"] = "hotpotqa"
     config["trainer"]["experiment_name"] = "searchr1_qwen3_8b"
+    config["trainer"]["default_local_dir"] = f"{CHECKPOINT_ROOT}/searchr1_qwen3_8b"
     return config
 
 
@@ -175,6 +182,7 @@ def config_train_qwen3_8b_rewrite() -> Dict[str, Any]:
     config["data"]["val_files"] = "data/test_dev.parquet"
     config["data_source_filter"] = "hotpotqa"
     config["trainer"]["experiment_name"] = "searchr1_qwen3_8b_rewrite"
+    config["trainer"]["default_local_dir"] = f"{CHECKPOINT_ROOT}/searchr1_qwen3_8b_rewrite"
     return config
 
 
@@ -186,6 +194,7 @@ def config_train_qwen3_8b_rewrite_em() -> Dict[str, Any]:
 
     config = config_train_qwen3_8b_rewrite()
     config["trainer"]["experiment_name"] = "searchr1_qwen3_8b_rewrite_em"
+    config["trainer"]["default_local_dir"] = f"{CHECKPOINT_ROOT}/searchr1_qwen3_8b_rewrite_em"
     return config
 
 
@@ -197,6 +206,7 @@ def config_train_qwen3_8b_shaped() -> Dict[str, Any]:
 
     config = config_train_qwen3_8b_rewrite()
     config["trainer"]["experiment_name"] = "searchr1_qwen3_8b_shaped"
+    config["trainer"]["default_local_dir"] = f"{CHECKPOINT_ROOT}/searchr1_qwen3_8b_shaped"
     return config
 
 
@@ -294,6 +304,15 @@ def main() -> None:
     }
 
     config = config_functions[args.config]()
+
+    # Optional resume from a specific checkpoint. Set VERL_RESUME_FROM_PATH to an
+    # absolute global_step_N directory; pair with WANDB_RUN_ID + WANDB_RESUME=allow
+    # in the environment so the resumed steps append to the original WandB run.
+    resume_path = os.environ.get("VERL_RESUME_FROM_PATH")
+    if resume_path:
+        config["trainer"]["resume_mode"] = "resume_path"
+        config["trainer"]["resume_from_path"] = resume_path
+        print(f"Resuming from checkpoint: {resume_path}")
 
     print(f"Starting training with '{args.config}' configuration...")
 

@@ -25,36 +25,40 @@ OUTPUTS_DIR = RECIPE_DIR / "outputs"
 BEST_SCORES_FILE = OUTPUTS_DIR / "best_val_scores.json"
 EVAL_TEMPLATE = RECIPE_DIR / "eval_checkpoint.bsub"
 
+# Absolute checkpoint root — must match CHECKPOINT_ROOT in train_search_r1_agent.py.
+# Each experiment writes to its own subdirectory.
+CHECKPOINT_ROOT = "/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/checkpoints"
+
 EXPERIMENTS = {
     "qwen7b": {
         "job_prefix": "train_qwen7b",
         "config": "qwen7b",
         "addr_file": "bm25_server_addr.txt",
-        "ckpt_dir": "checkpoints/searchr1_checkpoints",
+        "ckpt_dir": f"{CHECKPOINT_ROOT}/searchr1_qwen7b",
     },
     "qwen3_8b": {
         "job_prefix": "train_qwen3_8b",
         "config": "qwen3_8b",
         "addr_file": "bm25_server_addr_qwen3.txt",
-        "ckpt_dir": "checkpoints/searchr1_checkpoints",
+        "ckpt_dir": f"{CHECKPOINT_ROOT}/searchr1_qwen3_8b",
     },
     "qwen3_8b_rewrite": {
         "job_prefix": "train_qwen3_8b_rewrite",
         "config": "qwen3_8b_rewrite",
         "addr_file": "bm25_server_addr_rewrite.txt",
-        "ckpt_dir": "checkpoints/searchr1_checkpoints",
+        "ckpt_dir": f"{CHECKPOINT_ROOT}/searchr1_qwen3_8b_rewrite",
     },
     "qwen3_8b_rewrite_em": {
         "job_prefix": "train_qwen3_8b_rewrite_em",
         "config": "qwen3_8b_rewrite_em",
         "addr_file": "bm25_server_addr_rewrite.txt",
-        "ckpt_dir": "checkpoints/searchr1_checkpoints",
+        "ckpt_dir": f"{CHECKPOINT_ROOT}/searchr1_qwen3_8b_rewrite_em",
     },
     "qwen3_8b_shaped": {
         "job_prefix": "train_qwen3_8b_shaped",
         "config": "qwen3_8b_shaped",
         "addr_file": "bm25_server_addr_qwen3.txt",
-        "ckpt_dir": "checkpoints/searchr1_checkpoints",
+        "ckpt_dir": f"{CHECKPOINT_ROOT}/searchr1_qwen3_8b_shaped",
     },
 }
 

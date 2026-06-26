@@ -31,6 +31,13 @@ export TRITON_CACHE_DIR=${RECIPE}/outputs/triton
 export XDG_CACHE_HOME=${RECIPE}/outputs/xdg
 export PYTHONPATH=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.claude/worktrees/feature+searchr1-qwen25-repro-qwen3-eval:${PYTHONPATH:-}
 
+# Resume the original WandB run (jrn0tjau) instead of starting a new one, since
+# this job recovers from checkpoint step 10 rather than training from step 1.
+# resume_mode defaults to "auto"; default_local_dir (searchr1_qwen7b) holds
+# global_step_10 + latest_checkpointed_iteration.txt, so VERL auto-resumes there.
+export WANDB_RUN_ID=jrn0tjau
+export WANDB_RESUME=allow
+
 # Block until the retrieval server writes its address (signals it is ready).
 echo "Waiting for retrieval server at ${ADDR_FILE} ..."
 until [ -f "${ADDR_FILE}" ]; do sleep 5; done
