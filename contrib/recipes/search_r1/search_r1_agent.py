@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 import pandas as pd
 import requests
 from openai import OpenAI
-from qa_em import compute_score_em
+from qa_em import compute_score_em, compute_shaped_reward
 
 from agentlightning import LLM, LitAgent, NamedResources, Rollout, Trainer, configure_logger, setup_logging
 
@@ -203,6 +203,144 @@ class SearchR1Agent(LitAgent[Dict[str, Any]]):
             )
         )
         return reward_score
+
+
+INSTRUCTION_FORMAT_REWRITE = """You will answer a question using search.
+
+First, rewrite the question to make it clearer and easier to search for. Put your rewritten question inside <rewrite> and </rewrite> tags. For multi-hop questions, decompose into sub-questions.
+
+Then conduct reasoning inside <think> and </think> every time you get new information. Search by writing <search> query </search>. When ready, answer inside <answer> and </answer>, without detailed illustrations. For example, <answer> Beijing </answer>.
+
+Question: """
+
+
+def extract_rewrite(response: str) -> Optional[str]:
+    """Extract the content of the first <rewrite>...</rewrite> tag."""
+    match = re.search(r"<rewrite>(.*?)</rewrite>", response, re.DOTALL)
+    return match.group(1).strip() if match else None
+
+
+class SearchR1RewriteAgent(LitAgent[Dict[str, Any]]):
+    """Search-R1 agent with a question-rewrite stage before the search loop.
+
+    Uses a shaped reward combining final-answer EM with retrieval-hit signal.
+    """
+
+    def __init__(
+        self,
+        val_temperature: Optional[float] = 0.0,
+        max_turns: int = 4,
+        alpha: float = 0.7,
+        beta: float = 0.3,
+    ) -> None:
+        super().__init__()
+        self.val_temperature = val_temperature
+        self.max_turns = max_turns
+        self.alpha = alpha
+        self.beta = beta
+
+    def rollout(
+        self,
+        task: Dict[str, Any],
+        resources: NamedResources,
+        rollout: Rollout,
+    ) -> float | None:
+        prompt = INSTRUCTION_FORMAT_REWRITE + task["question"]
+        answer_list: List[str] = cast(List[str], task["golden_answers"])
+        rollout_id = rollout.rollout_id
+        logger.info(f"[Rollout {rollout_id}] Question: {task['question']}")
+        logger.info(f"[Rollout {rollout_id}] Ground Truth: {answer_list}")
+
+        start_time = time.time()
+        llm: LLM = cast(LLM, resources["main_llm"])
+        client = OpenAI(
+            base_url=llm.get_base_url(rollout_id, rollout.attempt.attempt_id),
+            api_key=os.environ.get("OPENAI_API_KEY", "token-abc123"),
+        )
+
+        if rollout.mode == "train":
+            temperature = llm.sampling_parameters.get("temperature", 1.0)
+        else:
+            temperature = self.val_temperature if self.val_temperature is not None else 0.0
+
+        rollout_content: str = ""
+        retrieved_passages: List[List[str]] = []
+
+        try:
+            # Turn 0: Rewrite stage
+            rewrite_response = call_llm(client, llm.model, prompt, temperature=temperature, max_tokens=300)
+            if "</rewrite>" in rewrite_response:
+                rewrite_response = rewrite_response.split("</rewrite>")[0] + "</rewrite>"
+            rollout_content += rewrite_response
+            rewritten = extract_rewrite(rewrite_response)
+            if rewritten:
+                logger.info(f"[Rollout {rollout_id}] Rewritten question: {rewritten}")
+            else:
+                logger.info(f"[Rollout {rollout_id}] No rewrite tag found, continuing with raw response")
+
+            # Turns 1-N: Search/Think/Answer loop (same as baseline)
+            turn_id = 0
+            finished_flag = False
+
+            while turn_id < self.max_turns and not finished_flag:
+                turn_id += 1
+                turn_response = call_llm(
+                    client, llm.model, prompt + rollout_content, temperature=temperature, max_tokens=500
+                )
+                valid_turn_response = postprocess_response(turn_response)
+                rollout_content += valid_turn_response
+
+                action, content = extract_action(valid_turn_response)
+                if action == "answer":
+                    finished_flag = True
+                elif action == "search":
+                    passages = _retrieve_passages(content)
+                    retrieved_passages.append(passages)
+                    formatted = passages2string(passages[:3])
+                    turn_env_feedback = f"\n\n<information>{formatted}</information>\n\n"
+                    rollout_content += turn_env_feedback
+                else:
+                    turn_env_feedback = (
+                        "\nMy previous action is invalid. If I want to search, I should put the query between "
+                        "<search> and </search>. If I want to give the final answer, I should put the answer "
+                        "between <answer> and </answer>. Let me try again.\n"
+                    )
+                    rollout_content += turn_env_feedback
+                logger.info(f"TURN ID {turn_id} | RESP: {turn_response}")
+
+            if not finished_flag:
+                turn_response = call_llm(
+                    client, llm.model, prompt + rollout_content, temperature=temperature, max_tokens=500
+                )
+                rollout_content += turn_response
+                logger.info(f"LAST TURN GENERATE | RESP: {turn_response}")
+
+        except Exception as e:
+            logger.exception(f"[Rollout {rollout_id}] Error during rollout: {e}")
+            return None
+
+        end_time_rollout = time.time()
+        reward_score = compute_shaped_reward(
+            rollout_content, answer_list, retrieved_passages, alpha=self.alpha, beta=self.beta
+        )
+        logger.info("[Rollout %s] Reward: %s (alpha=%.1f, beta=%.1f)", rollout_id, reward_score, self.alpha, self.beta)
+        logger.info("[Rollout %s] Time taken for rollout: %.2f seconds", rollout_id, end_time_rollout - start_time)
+        logger.info(
+            "question: {} answer: {} ground_truth: {} reward: {}".format(
+                task["question"], rollout_content, answer_list, reward_score
+            )
+        )
+        return reward_score
+
+
+def _retrieve_passages(query: str) -> List[str]:
+    """Retrieve raw passages (before formatting) for reward computation."""
+    url = _retrieval_url()
+    response = requests.post(f"{url}/search", json={"query": query})
+    response.raise_for_status()
+    json_resp: Dict[str, Any] = cast(Dict[str, Any], response.json())
+    passages: List[str] = cast(List[str], json_resp["passages"])
+    return [p for p in passages if not p.startswith("Other retrieved pages")][:3]
 
 
 def debug_search_r1_agent():

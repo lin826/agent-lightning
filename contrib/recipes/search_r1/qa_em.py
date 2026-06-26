@@ -108,6 +108,39 @@ def compute_score_em(
             return format_score
 
 
+def compute_shaped_reward(
+    solution_str: str,
+    ground_truth: Union[str, Sequence[str]],
+    retrieved_passages: Sequence[Sequence[str]],
+    alpha: float = 0.7,
+    beta: float = 0.3,
+) -> float:
+    """Shaped reward combining final-answer EM with retrieval-hit signal.
+
+    Returns a value in {0, beta, alpha, alpha+beta} giving GRPO more gradient
+    signal than pure binary EM.
+    """
+    em_score = float(em_check(extract_solution(solution_str) or "", ground_truth))
+
+    if isinstance(ground_truth, str):
+        ground_truth = [ground_truth]
+
+    retrieval_hit = 0.0
+    for passages in retrieved_passages:
+        for passage in passages:
+            normalized_passage = normalize_answer(passage)
+            for answer in ground_truth:
+                if normalize_answer(answer) in normalized_passage:
+                    retrieval_hit = 1.0
+                    break
+            if retrieval_hit:
+                break
+        if retrieval_hit:
+            break
+
+    return alpha * em_score + beta * retrieval_hit
+
+
 def compute_score_subem(
     solution_str: str,
     ground_truth: Mapping[str, Union[str, Sequence[str]]],

@@ -135,6 +135,7 @@ def config_train_qwen7b() -> Dict[str, Any]:
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["optimizer_offload"] = False
     config["actor_rollout_ref"]["ref"]["fsdp_config"]["param_offload"] = False
     config["data"]["val_files"] = "data/test_dev.parquet"
+    config["data_source_filter"] = "hotpotqa"
     config["trainer"]["experiment_name"] = "searchr1_qwen7b"
     return config
 
@@ -153,7 +154,27 @@ def config_train_qwen3_8b() -> Dict[str, Any]:
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["optimizer_offload"] = False
     config["actor_rollout_ref"]["ref"]["fsdp_config"]["param_offload"] = False
     config["data"]["val_files"] = "data/test_dev.parquet"
+    config["data_source_filter"] = "hotpotqa"
     config["trainer"]["experiment_name"] = "searchr1_qwen3_8b"
+    return config
+
+
+def config_train_qwen3_8b_rewrite() -> Dict[str, Any]:
+    """Configuration for the question-rewrite experiment with Qwen3-8B.
+
+    Same hardware settings as qwen3_8b but uses the SearchR1RewriteAgent which
+    adds a <rewrite> stage and a shaped reward (EM + retrieval-hit).
+    """
+
+    config = deepcopy(RL_TRAINING_CONFIG)
+    config["actor_rollout_ref"]["model"]["path"] = "Qwen/Qwen3-8B"
+    config["actor_rollout_ref"]["rollout"]["gpu_memory_utilization"] = 0.85
+    config["actor_rollout_ref"]["actor"]["fsdp_config"]["param_offload"] = False
+    config["actor_rollout_ref"]["actor"]["fsdp_config"]["optimizer_offload"] = False
+    config["actor_rollout_ref"]["ref"]["fsdp_config"]["param_offload"] = False
+    config["data"]["val_files"] = "data/test_dev.parquet"
+    config["data_source_filter"] = "hotpotqa"
+    config["trainer"]["experiment_name"] = "searchr1_qwen3_8b_rewrite"
     return config
 
 
@@ -170,14 +191,27 @@ def config_train_llama() -> Dict[str, Any]:
     return config
 
 
-def train(config: Dict[str, Any]) -> None:
+def train(config: Dict[str, Any], use_rewrite_agent: bool = False) -> None:
 
-    agent = SearchR1Agent()
+    if use_rewrite_agent:
+        from search_r1_agent import SearchR1RewriteAgent
+        agent = SearchR1RewriteAgent()
+    else:
+        agent = SearchR1Agent()
     algorithm = agl.VERL(config)
     trainer = agl.Trainer(n_runners=32, algorithm=algorithm)
 
-    train_data = pd.read_parquet(config["data"]["train_files"]).to_dict(orient="records")  # type: ignore
-    val_data = pd.read_parquet(config["data"]["val_files"]).to_dict(orient="records")  # type: ignore
+    train_df = pd.read_parquet(config["data"]["train_files"])
+    val_df = pd.read_parquet(config["data"]["val_files"])
+
+    if config.get("data_source_filter"):
+        source = config["data_source_filter"]
+        train_df = train_df[train_df["data_source"] == source]
+        val_df = val_df[val_df["data_source"] == source]
+        print(f"Filtered to data_source='{source}': train={len(train_df)}, val={len(val_df)}")
+
+    train_data = train_df.to_dict(orient="records")  # type: ignore
+    val_data = val_df.to_dict(orient="records")  # type: ignore
     trainer.fit(agent, train_dataset=train_data, val_dataset=val_data)  # type: ignore
 
 
@@ -187,10 +221,11 @@ def main() -> None:
 
     parser.add_argument(
         "config",
-        choices=["fast", "qwen", "qwen7b", "qwen3_8b", "llama"],
+        choices=["fast", "qwen", "qwen7b", "qwen3_8b", "qwen3_8b_rewrite", "llama"],
         help=(
             "Training configuration: 'fast' (CI testing), 'qwen' (Qwen-2.5-Coder-1.5B), "
             "'qwen7b' (Qwen2.5-7B-Instruct, H100 80 GB), 'qwen3_8b' (Qwen3-8B, H100 80 GB), "
+            "'qwen3_8b_rewrite' (Qwen3-8B with question-rewrite + shaped reward), "
             "'llama' (LLaMA-3.2-3B-Instruct)"
         ),
     )
@@ -203,14 +238,16 @@ def main() -> None:
         "qwen": config_train_qwen,
         "qwen7b": config_train_qwen7b,
         "qwen3_8b": config_train_qwen3_8b,
+        "qwen3_8b_rewrite": config_train_qwen3_8b_rewrite,
         "llama": config_train_llama,
     }
 
     config = config_functions[args.config]()
+    use_rewrite = args.config == "qwen3_8b_rewrite"
 
     print(f"Starting training with '{args.config}' configuration...")
 
-    train(config)
+    train(config, use_rewrite_agent=use_rewrite)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ set -euo pipefail
 
 PPLRL=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl
 PYTHON=${PPLRL}/.venv/bin/python
-RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1
+RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.claude/worktrees/feature+searchr1-qwen25-repro-qwen3-eval/contrib/recipes/search_r1
 ADDR_FILE=${RECIPE}/outputs/bm25_server_addr.txt
 
 # Load WANDB_API_KEY and other secrets from .env
@@ -29,11 +29,7 @@ export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
 export HF_HOME=/u/zwhong/.cache/huggingface
 export TRITON_CACHE_DIR=${RECIPE}/outputs/triton
 export XDG_CACHE_HOME=${RECIPE}/outputs/xdg
-
-mkdir -p "${TRITON_CACHE_DIR}" "${XDG_CACHE_HOME}"
-
-# Prefer the local agentlightning source over the venv's installed copy.
-export PYTHONPATH=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning:${PYTHONPATH:-}
+export PYTHONPATH=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.claude/worktrees/feature+searchr1-qwen25-repro-qwen3-eval:${PYTHONPATH:-}
 
 # Block until the retrieval server writes its address (signals it is ready).
 echo "Waiting for retrieval server at ${ADDR_FILE} ..."
