@@ -134,6 +134,7 @@ def config_train_qwen7b() -> Dict[str, Any]:
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["param_offload"] = False
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["optimizer_offload"] = False
     config["actor_rollout_ref"]["ref"]["fsdp_config"]["param_offload"] = False
+    config["data"]["val_files"] = "data/test_dev.parquet"
     config["trainer"]["experiment_name"] = "searchr1_qwen7b"
     return config
 
@@ -151,6 +152,7 @@ def config_train_qwen3_8b() -> Dict[str, Any]:
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["param_offload"] = False
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["optimizer_offload"] = False
     config["actor_rollout_ref"]["ref"]["fsdp_config"]["param_offload"] = False
+    config["data"]["val_files"] = "data/test_dev.parquet"
     config["trainer"]["experiment_name"] = "searchr1_qwen3_8b"
     return config
 
