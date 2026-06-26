@@ -221,9 +221,19 @@ def extract_rewrite(response: str) -> Optional[str]:
 
 
 class SearchR1RewriteAgent(LitAgent[Dict[str, Any]]):
-    """Search-R1 agent with a question-rewrite stage before the search loop.
+    """Search-R1 agent supporting the question-rewrite ablation variants.
 
-    Uses a shaped reward combining final-answer EM with retrieval-hit signal.
+    A single class covers three of the four experiment variants via the
+    ``use_rewrite`` flag and the ``alpha``/``beta`` shaped-reward weights:
+
+    - **B (rewrite + EM):** ``use_rewrite=True, alpha=1.0, beta=0.0``
+    - **C (rewrite + shaped):** ``use_rewrite=True, alpha=0.7, beta=0.3``
+    - **D (no rewrite + shaped):** ``use_rewrite=False, alpha=0.7, beta=0.3``
+
+    When ``use_rewrite`` is False the rewrite turn is skipped and the base
+    Search-R1 prompt is used, but retrieved passages are still tracked so the
+    shaped reward can credit retrieval hits. Validation always reports pure EM
+    so ``val/reward`` is comparable across every variant.
     """
 
     def __init__(
@@ -232,12 +242,14 @@ class SearchR1RewriteAgent(LitAgent[Dict[str, Any]]):
         max_turns: int = 4,
         alpha: float = 0.7,
         beta: float = 0.3,
+        use_rewrite: bool = True,
     ) -> None:
         super().__init__()
         self.val_temperature = val_temperature
         self.max_turns = max_turns
         self.alpha = alpha
         self.beta = beta
+        self.use_rewrite = use_rewrite
 
     def rollout(
         self,
@@ -245,7 +257,8 @@ class SearchR1RewriteAgent(LitAgent[Dict[str, Any]]):
         resources: NamedResources,
         rollout: Rollout,
     ) -> float | None:
-        prompt = INSTRUCTION_FORMAT_REWRITE + task["question"]
+        instruction = INSTRUCTION_FORMAT_REWRITE if self.use_rewrite else INSTRUCTION_FORMAT
+        prompt = instruction + task["question"]
         answer_list: List[str] = cast(List[str], task["golden_answers"])
         rollout_id = rollout.rollout_id
         logger.info(f"[Rollout {rollout_id}] Question: {task['question']}")
@@ -267,16 +280,17 @@ class SearchR1RewriteAgent(LitAgent[Dict[str, Any]]):
         retrieved_passages: List[List[str]] = []
 
         try:
-            # Turn 0: Rewrite stage
-            rewrite_response = call_llm(client, llm.model, prompt, temperature=temperature, max_tokens=300)
-            if "</rewrite>" in rewrite_response:
-                rewrite_response = rewrite_response.split("</rewrite>")[0] + "</rewrite>"
-            rollout_content += rewrite_response
-            rewritten = extract_rewrite(rewrite_response)
-            if rewritten:
-                logger.info(f"[Rollout {rollout_id}] Rewritten question: {rewritten}")
-            else:
-                logger.info(f"[Rollout {rollout_id}] No rewrite tag found, continuing with raw response")
+            # Turn 0: Rewrite stage (skipped for the no-rewrite variant D)
+            if self.use_rewrite:
+                rewrite_response = call_llm(client, llm.model, prompt, temperature=temperature, max_tokens=300)
+                if "</rewrite>" in rewrite_response:
+                    rewrite_response = rewrite_response.split("</rewrite>")[0] + "</rewrite>"
+                rollout_content += rewrite_response
+                rewritten = extract_rewrite(rewrite_response)
+                if rewritten:
+                    logger.info(f"[Rollout {rollout_id}] Rewritten question: {rewritten}")
+                else:
+                    logger.info(f"[Rollout {rollout_id}] No rewrite tag found, continuing with raw response")
 
             # Turns 1-N: Search/Think/Answer loop (same as baseline)
             turn_id = 0

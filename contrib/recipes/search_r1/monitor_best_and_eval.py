@@ -44,6 +44,18 @@ EXPERIMENTS = {
         "addr_file": "bm25_server_addr_rewrite.txt",
         "ckpt_dir": "checkpoints/searchr1_checkpoints",
     },
+    "qwen3_8b_rewrite_em": {
+        "job_prefix": "train_qwen3_8b_rewrite_em",
+        "config": "qwen3_8b_rewrite_em",
+        "addr_file": "bm25_server_addr_rewrite.txt",
+        "ckpt_dir": "checkpoints/searchr1_checkpoints",
+    },
+    "qwen3_8b_shaped": {
+        "job_prefix": "train_qwen3_8b_shaped",
+        "config": "qwen3_8b_shaped",
+        "addr_file": "bm25_server_addr_qwen3.txt",
+        "ckpt_dir": "checkpoints/searchr1_checkpoints",
+    },
 }
 
 VAL_SCORE_PATTERN = re.compile(r"step:(\d+)\s.*?val/reward:([\d.]+)")

@@ -178,6 +178,28 @@ def config_train_qwen3_8b_rewrite() -> Dict[str, Any]:
     return config
 
 
+def config_train_qwen3_8b_rewrite_em() -> Dict[str, Any]:
+    """Variant B: question-rewrite stage with pure-EM reward (alpha=1, beta=0).
+
+    Isolates the effect of the rewrite stage without the retrieval-hit signal.
+    """
+
+    config = config_train_qwen3_8b_rewrite()
+    config["trainer"]["experiment_name"] = "searchr1_qwen3_8b_rewrite_em"
+    return config
+
+
+def config_train_qwen3_8b_shaped() -> Dict[str, Any]:
+    """Variant D: shaped reward (alpha=0.7, beta=0.3) without the rewrite stage.
+
+    Isolates the effect of the retrieval-hit reward signal without rewriting.
+    """
+
+    config = config_train_qwen3_8b_rewrite()
+    config["trainer"]["experiment_name"] = "searchr1_qwen3_8b_shaped"
+    return config
+
+
 def config_train_llama() -> Dict[str, Any]:
     """A configuration for training with LLaMA-3.2-3B-Instruct.
 
@@ -191,13 +213,29 @@ def config_train_llama() -> Dict[str, Any]:
     return config
 
 
-def train(config: Dict[str, Any], use_rewrite_agent: bool = False) -> None:
+def build_agent(config_name: str):
+    """Construct the agent for a given experiment variant.
 
-    if use_rewrite_agent:
-        from search_r1_agent import SearchR1RewriteAgent
-        agent = SearchR1RewriteAgent()
-    else:
-        agent = SearchR1Agent()
+    Variant matrix:
+      - qwen7b / qwen3_8b (A):  baseline SearchR1Agent, pure-EM reward
+      - qwen3_8b_rewrite (C):   rewrite stage + shaped reward (alpha=0.7, beta=0.3)
+      - qwen3_8b_rewrite_em (B): rewrite stage + pure-EM reward (alpha=1, beta=0)
+      - qwen3_8b_shaped (D):    no rewrite + shaped reward (alpha=0.7, beta=0.3)
+    """
+    from search_r1_agent import SearchR1RewriteAgent
+
+    if config_name == "qwen3_8b_rewrite":
+        return SearchR1RewriteAgent(alpha=0.7, beta=0.3, use_rewrite=True)
+    if config_name == "qwen3_8b_rewrite_em":
+        return SearchR1RewriteAgent(alpha=1.0, beta=0.0, use_rewrite=True)
+    if config_name == "qwen3_8b_shaped":
+        return SearchR1RewriteAgent(alpha=0.7, beta=0.3, use_rewrite=False)
+    return SearchR1Agent()
+
+
+def train(config: Dict[str, Any], config_name: str = "qwen7b") -> None:
+
+    agent = build_agent(config_name)
     algorithm = agl.VERL(config)
     trainer = agl.Trainer(n_runners=32, algorithm=algorithm)
 
@@ -221,11 +259,22 @@ def main() -> None:
 
     parser.add_argument(
         "config",
-        choices=["fast", "qwen", "qwen7b", "qwen3_8b", "qwen3_8b_rewrite", "llama"],
+        choices=[
+            "fast",
+            "qwen",
+            "qwen7b",
+            "qwen3_8b",
+            "qwen3_8b_rewrite",
+            "qwen3_8b_rewrite_em",
+            "qwen3_8b_shaped",
+            "llama",
+        ],
         help=(
             "Training configuration: 'fast' (CI testing), 'qwen' (Qwen-2.5-Coder-1.5B), "
-            "'qwen7b' (Qwen2.5-7B-Instruct, H100 80 GB), 'qwen3_8b' (Qwen3-8B, H100 80 GB), "
-            "'qwen3_8b_rewrite' (Qwen3-8B with question-rewrite + shaped reward), "
+            "'qwen7b' (Qwen2.5-7B-Instruct, H100 80 GB), 'qwen3_8b' (Qwen3-8B baseline, variant A), "
+            "'qwen3_8b_rewrite' (rewrite + shaped reward, variant C), "
+            "'qwen3_8b_rewrite_em' (rewrite + pure-EM reward, variant B), "
+            "'qwen3_8b_shaped' (no rewrite + shaped reward, variant D), "
             "'llama' (LLaMA-3.2-3B-Instruct)"
         ),
     )
@@ -239,15 +288,16 @@ def main() -> None:
         "qwen7b": config_train_qwen7b,
         "qwen3_8b": config_train_qwen3_8b,
         "qwen3_8b_rewrite": config_train_qwen3_8b_rewrite,
+        "qwen3_8b_rewrite_em": config_train_qwen3_8b_rewrite_em,
+        "qwen3_8b_shaped": config_train_qwen3_8b_shaped,
         "llama": config_train_llama,
     }
 
     config = config_functions[args.config]()
-    use_rewrite = args.config == "qwen3_8b_rewrite"
 
     print(f"Starting training with '{args.config}' configuration...")
 
-    train(config, use_rewrite_agent=use_rewrite)
+    train(config, config_name=args.config)
 
 
 if __name__ == "__main__":

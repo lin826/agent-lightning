@@ -21,9 +21,11 @@ from search_r1_agent import SearchR1Agent, SearchR1RewriteAgent
 import agentlightning as agl
 
 from train_search_r1_agent import (
-    RL_TRAINING_CONFIG,
+    build_agent,
     config_train_qwen3_8b,
     config_train_qwen3_8b_rewrite,
+    config_train_qwen3_8b_rewrite_em,
+    config_train_qwen3_8b_shaped,
     config_train_qwen7b,
 )
 
@@ -44,7 +46,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a Search-R1 checkpoint on full test.parquet (hotpotqa)")
     parser.add_argument(
         "config",
-        choices=["qwen7b", "qwen3_8b", "qwen3_8b_rewrite"],
+        choices=["qwen7b", "qwen3_8b", "qwen3_8b_rewrite", "qwen3_8b_rewrite_em", "qwen3_8b_shaped"],
         help="Which experiment config to base evaluation on",
     )
     parser.add_argument("checkpoint_path", help="Path to the actor checkpoint directory (e.g. global_step_N/actor)")
@@ -55,16 +57,16 @@ def main() -> None:
         "qwen7b": config_train_qwen7b,
         "qwen3_8b": config_train_qwen3_8b,
         "qwen3_8b_rewrite": config_train_qwen3_8b_rewrite,
+        "qwen3_8b_rewrite_em": config_train_qwen3_8b_rewrite_em,
+        "qwen3_8b_shaped": config_train_qwen3_8b_shaped,
     }
 
     base_config = config_functions[args.config]()
     config = make_eval_config(base_config, args.checkpoint_path, args.step)
 
-    use_rewrite = args.config == "qwen3_8b_rewrite"
-    if use_rewrite:
-        agent = SearchR1RewriteAgent()
-    else:
-        agent = SearchR1Agent()
+    # build_agent matches the rollout structure (rewrite vs not) of the training
+    # variant; validation always reports pure EM regardless of alpha/beta.
+    agent = build_agent(args.config)
 
     algorithm = agl.VERL(config)
     trainer = agl.Trainer(n_runners=32, algorithm=algorithm)
