@@ -2,8 +2,8 @@
 #BSUB -J train_searchr1_qwen3_8b
 #BSUB -G grp_runtime
 #BSUB -q normal
-#BSUB -n 16
-#BSUB -R "span[hosts=1] rusage[mem=512GB]"
+#BSUB -n 64
+#BSUB -R "span[hosts=1] rusage[mem=128GB]"
 #BSUB -gpu "num=8:mode=shared:j_exclusive=yes:gmodel=NVIDIAH10080GBHBM3"
 #BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_qwen3_8b.%J.out
 #BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_qwen3_8b.%J.err
