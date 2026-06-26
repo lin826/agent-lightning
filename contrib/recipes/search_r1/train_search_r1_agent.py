@@ -143,16 +143,16 @@ def config_train_qwen7b() -> Dict[str, Any]:
 def config_train_qwen3_8b() -> Dict[str, Any]:
     """A configuration for training with Qwen3-8B on H100 80GB GPUs.
 
-    Qwen3-8B uses the same Hermes tool-call format as Qwen2.5.  Offloading is
-    disabled to exploit the full 80 GB VRAM on H100 HBM3 nodes.
+    Uses gpu_memory_utilization=0.5 and ref param_offload to leave enough VRAM
+    for vLLM KV cache re-allocation after FSDP training steps.
     """
 
     config = deepcopy(RL_TRAINING_CONFIG)
     config["actor_rollout_ref"]["model"]["path"] = "Qwen/Qwen3-8B"
-    config["actor_rollout_ref"]["rollout"]["gpu_memory_utilization"] = 0.85
+    config["actor_rollout_ref"]["rollout"]["gpu_memory_utilization"] = 0.5
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["param_offload"] = False
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["optimizer_offload"] = False
-    config["actor_rollout_ref"]["ref"]["fsdp_config"]["param_offload"] = False
+    config["actor_rollout_ref"]["ref"]["fsdp_config"]["param_offload"] = True
     config["data"]["val_files"] = "data/test_dev.parquet"
     config["data_source_filter"] = "hotpotqa"
     config["trainer"]["experiment_name"] = "searchr1_qwen3_8b"
@@ -168,10 +168,10 @@ def config_train_qwen3_8b_rewrite() -> Dict[str, Any]:
 
     config = deepcopy(RL_TRAINING_CONFIG)
     config["actor_rollout_ref"]["model"]["path"] = "Qwen/Qwen3-8B"
-    config["actor_rollout_ref"]["rollout"]["gpu_memory_utilization"] = 0.85
+    config["actor_rollout_ref"]["rollout"]["gpu_memory_utilization"] = 0.5
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["param_offload"] = False
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["optimizer_offload"] = False
-    config["actor_rollout_ref"]["ref"]["fsdp_config"]["param_offload"] = False
+    config["actor_rollout_ref"]["ref"]["fsdp_config"]["param_offload"] = True
     config["data"]["val_files"] = "data/test_dev.parquet"
     config["data_source_filter"] = "hotpotqa"
     config["trainer"]["experiment_name"] = "searchr1_qwen3_8b_rewrite"

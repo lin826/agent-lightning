@@ -152,8 +152,8 @@ def monitor_loop(poll_interval: int, dry_run: bool) -> None:
         if name not in states:
             states[name] = ExperimentState()
 
-    print(f"Monitoring {len(EXPERIMENTS)} experiments, polling every {poll_interval}s")
-    print(f"Current bests: {', '.join(f'{n}={s.best_score:.3f}@step{s.best_step}' for n, s in states.items())}")
+    print(f"Monitoring {len(EXPERIMENTS)} experiments, polling every {poll_interval}s", flush=True)
+    print(f"Current bests: {', '.join(f'{n}={s.best_score:.3f}@step{s.best_step}' for n, s in states.items())}", flush=True)
 
     while True:
         updated = False
@@ -172,13 +172,13 @@ def monitor_loop(poll_interval: int, dry_run: bool) -> None:
             state.last_log_pos = file_size
 
             for step, score in new_scores:
-                print(f"[{name}] step {step}: val/reward = {score:.4f} (best: {state.best_score:.4f})")
+                print(f"[{name}] step {step}: val/reward = {score:.4f} (best: {state.best_score:.4f})", flush=True)
 
                 if score > state.best_score:
                     state.best_score = score
                     state.best_step = step
                     updated = True
-                    print(f"  *** NEW BEST for {name}: {score:.4f} at step {step} ***")
+                    print(f"  *** NEW BEST for {name}: {score:.4f} at step {step} ***", flush=True)
 
                     if step in state.eval_submitted_steps:
                         print(f"  (eval already submitted for step {step}, skipping)")
