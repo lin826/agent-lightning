@@ -18,6 +18,10 @@ Always commit the refreshed `uv.lock` when dependencies shift, and mention optio
 ## Common Issues & Fixes
 - When `uv run` errors with `Permission denied` under `~/.cache`, override both cache locations inline: ``UV_CACHE="$(pwd)/.cache_uv" XDG_CACHE_HOME="$(pwd)/.cache_xdg" uv run --no-sync <command>``.
 
+## Checkpointing & Resume (VERL training jobs)
+- Each concurrent experiment MUST write to its own `trainer.default_local_dir` (e.g. `checkpoints/searchr1_<variant>/`). VERL saves to `{default_local_dir}/global_step_{N}`, so jobs sharing a directory silently overwrite each other's `global_step_N` and `latest_checkpointed_iteration.txt` — catastrophic when the runs use different model architectures. Prefer absolute paths to avoid CWD-resolution surprises.
+- A resumed job that does NOT restart from step 1 must reuse the ORIGINAL WandB run id instead of creating a new run. Set `WANDB_RUN_ID=<original_id>` and `WANDB_RESUME=allow` in the job's environment; VERL calls `wandb.init(...)` without an explicit `id`/`resume`, so these env vars take effect and the resumed steps append to the same curve.
+
 ## Coding Style & Naming Conventions
 - Target `requires-python >= 3.10`, four-space indentation, 120-character lines (though docstrings may run longer), and formatter-owned diffs (Black + isort, `black` profile). Use `snake_case` for modules, functions, and variables; `PascalCase` for classes and React components; lowercase hyphenation for CLI flags, branch names, and TypeScript filenames.
 - Maintain exhaustive type hints (pyright enforces them) and prefer shared dataclasses or Pydantic models from `agentlightning.types`.
