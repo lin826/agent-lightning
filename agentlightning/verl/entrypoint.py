@@ -221,6 +221,11 @@ class TaskRunner:
         else:
             val_dataset = LoadedDataset(val_dataset)
 
+        # val_only eval passes an empty train_dataset; VERL still builds a train sampler before
+        # fit() returns after validation. Reuse val data so sampler construction succeeds.
+        if config.trainer.get("val_only", False) and len(train_dataset) == 0:
+            train_dataset = val_dataset
+
         train_sampler = create_rl_sampler(config.data, train_dataset)
         trainer = trainer_cls(
             config=config,
