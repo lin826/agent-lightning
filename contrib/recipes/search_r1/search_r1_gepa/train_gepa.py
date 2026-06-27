@@ -13,6 +13,7 @@ Environment:
     RETRIEVAL_SERVER_URL or RETRIEVAL_SERVER_ADDR_FILE — BM25 server (required)
     OPENAI_API_BASE — vLLM OpenAI endpoint for Qwen2.5-3B-Instruct (required)
     GEPA_MAX_METRIC_CALLS — optimization budget (default: 1500)
+    GEPA_ROLLOUT_CONCURRENCY — parallel Search-R1 rollouts (default: 1; train_gepa.bsub sets 8)
     GEPA_REFLECTION_LM — litellm model id for reflection (default: same as task LM)
     GEPA_TRAIN_SUBSET — optional cap on hotpotqa train examples for smoke tests
 """
@@ -57,6 +58,15 @@ DATA_SOURCE = "hotpotqa"
 TRAIN_FILE = "data/train.parquet"
 VAL_FILE = "data/test_dev.parquet"
 DEFAULT_MAX_METRIC_CALLS = 1500
+DEFAULT_ROLLOUT_CONCURRENCY = 1
+
+
+def resolve_rollout_concurrency(cli_value: int | None) -> int:
+    if cli_value is not None:
+        return max(1, cli_value)
+    if os.environ.get("GEPA_ROLLOUT_CONCURRENCY"):
+        return max(1, int(os.environ["GEPA_ROLLOUT_CONCURRENCY"]))
+    return DEFAULT_ROLLOUT_CONCURRENCY
 
 
 def load_dataset(data_dir: Path, *, train_subset: int | None = None) -> tuple[list[SearchR1DataInst], list[SearchR1DataInst]]:
@@ -111,6 +121,12 @@ def main() -> None:
     parser.add_argument("--run-dir", type=Path, default=_RECIPE_DIR / "outputs" / "gepa_qwen25_3b", help="GEPA state dir")
     parser.add_argument("--max-metric-calls", type=int, default=None, help="GEPA evaluation budget")
     parser.add_argument("--train-subset", type=int, default=None, help="Cap train examples (smoke tests)")
+    parser.add_argument(
+        "--rollout-concurrency",
+        type=int,
+        default=None,
+        help="Parallel Search-R1 rollouts per batch (default: GEPA_ROLLOUT_CONCURRENCY or 1)",
+    )
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -133,8 +149,11 @@ def main() -> None:
     train_data, val_data = load_dataset(args.data_dir, train_subset=train_subset)
     args.run_dir.mkdir(parents=True, exist_ok=True)
 
+    rollout_concurrency = resolve_rollout_concurrency(args.rollout_concurrency)
+    logger.info("Rollout concurrency=%d", rollout_concurrency)
+
     llm_call = make_openai_llm_call(base_url=api_base, model=MODEL_NAME, default_temperature=1.0)
-    adapter = SearchR1GEPAAdapter(llm_call, eval_mode="train")
+    adapter = SearchR1GEPAAdapter(llm_call, eval_mode="train", rollout_concurrency=rollout_concurrency)
 
     seed_candidate = default_seed_candidate()
     wandb_init_kwargs: dict[str, Any] = {
@@ -147,6 +166,7 @@ def main() -> None:
             "train_file": TRAIN_FILE,
             "val_file": VAL_FILE,
             "max_metric_calls": max_metric_calls,
+            "rollout_concurrency": rollout_concurrency,
             "seed_instruction": INSTRUCTION_FORMAT[:200],
         },
     }
@@ -154,7 +174,7 @@ def main() -> None:
         wandb_init_kwargs["entity"] = os.environ["WANDB_ENTITY"]
 
     logger.info("Evaluating seed prompt on val (n=%d)...", len(val_data))
-    val_adapter = SearchR1GEPAAdapter(llm_call, eval_mode="val")
+    val_adapter = SearchR1GEPAAdapter(llm_call, eval_mode="val", rollout_concurrency=rollout_concurrency)
     seed_val_em = evaluate_split(val_adapter, seed_candidate, val_data)
     logger.info("Seed val/em=%.4f", seed_val_em)
 
@@ -178,7 +198,9 @@ def main() -> None:
 
     best_candidate = result.best_candidate
     best_val_em = evaluate_split(val_adapter, best_candidate, val_data)
-    train_adapter = SearchR1GEPAAdapter(llm_call, eval_mode="train")
+    train_adapter = SearchR1GEPAAdapter(
+        llm_call, eval_mode="train", rollout_concurrency=rollout_concurrency
+    )
     best_train_em = evaluate_split(train_adapter, best_candidate, train_data[: min(500, len(train_data))])
 
     summary = {

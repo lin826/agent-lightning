@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, TypedDict
 
@@ -130,15 +131,53 @@ class SearchR1GEPAAdapter(GEPAAdapter[SearchR1DataInst, SearchR1Trajectory, Sear
         train_temperature: float = 1.0,
         val_temperature: float = 0.0,
         eval_mode: str = "train",
+        rollout_concurrency: int = 1,
     ) -> None:
         self.llm_call = llm_call
         self.max_turns = max_turns
         self.train_temperature = train_temperature
         self.val_temperature = val_temperature
         self.eval_mode = eval_mode
+        self.rollout_concurrency = max(1, rollout_concurrency)
 
     def _temperature(self) -> float:
         return self.val_temperature if self.eval_mode == "val" else self.train_temperature
+
+    def _evaluate_one(
+        self,
+        data: SearchR1DataInst,
+        instruction: str,
+    ) -> tuple[SearchR1RolloutOutput, float, SearchR1Trajectory]:
+        try:
+            rollout_content = run_search_r1_rollout(
+                self.llm_call,
+                instruction,
+                data["question"],
+                max_turns=self.max_turns,
+                temperature=self._temperature(),
+            )
+            em_score = float(compute_score_em(rollout_content, data["golden_answers"]))
+            extracted = extract_solution(rollout_content)
+            output: SearchR1RolloutOutput = {
+                "rollout_content": rollout_content,
+                "extracted_answer": extracted,
+            }
+            feedback = _build_feedback(data["question"], data["golden_answers"], rollout_content, em_score)
+        except Exception as exc:
+            logger.exception("Rollout failed for %s: %s", data.get("data_id", "?"), exc)
+            em_score = 0.0
+            rollout_content = ""
+            extracted = None
+            output = {"rollout_content": rollout_content, "extracted_answer": extracted}
+            feedback = f"Rollout failed with error: {exc}"
+
+        trajectory = {
+            "data": data,
+            "rollout_content": rollout_content,
+            "extracted_answer": extracted,
+            "feedback": feedback,
+        }
+        return output, em_score, trajectory
 
     def evaluate(
         self,
@@ -151,41 +190,22 @@ class SearchR1GEPAAdapter(GEPAAdapter[SearchR1DataInst, SearchR1Trajectory, Sear
         scores: list[float] = []
         trajectories: list[SearchR1Trajectory] | None = [] if capture_traces else None
 
-        for data in batch:
-            try:
-                rollout_content = run_search_r1_rollout(
-                    self.llm_call,
-                    instruction,
-                    data["question"],
-                    max_turns=self.max_turns,
-                    temperature=self._temperature(),
-                )
-                em_score = float(compute_score_em(rollout_content, data["golden_answers"]))
-                extracted = extract_solution(rollout_content)
-                output: SearchR1RolloutOutput = {
-                    "rollout_content": rollout_content,
-                    "extracted_answer": extracted,
-                }
-                feedback = _build_feedback(data["question"], data["golden_answers"], rollout_content, em_score)
-            except Exception as exc:
-                logger.exception("Rollout failed for %s: %s", data.get("data_id", "?"), exc)
-                em_score = 0.0
-                rollout_content = ""
-                extracted = None
-                output = {"rollout_content": rollout_content, "extracted_answer": extracted}
-                feedback = f"Rollout failed with error: {exc}"
-
-            outputs.append(output)
-            scores.append(em_score)
-            if trajectories is not None:
-                trajectories.append(
-                    {
-                        "data": data,
-                        "rollout_content": rollout_content,
-                        "extracted_answer": extracted,
-                        "feedback": feedback,
-                    }
-                )
+        if self.rollout_concurrency <= 1 or len(batch) <= 1:
+            for data in batch:
+                output, em_score, trajectory = self._evaluate_one(data, instruction)
+                outputs.append(output)
+                scores.append(em_score)
+                if trajectories is not None:
+                    trajectories.append(trajectory)
+        else:
+            workers = min(self.rollout_concurrency, len(batch))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                results = list(pool.map(lambda data: self._evaluate_one(data, instruction), batch))
+            for output, em_score, trajectory in results:
+                outputs.append(output)
+                scores.append(em_score)
+                if trajectories is not None:
+                    trajectories.append(trajectory)
 
         return EvaluationBatch(outputs=outputs, scores=scores, trajectories=trajectories)
 
