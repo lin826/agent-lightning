@@ -211,16 +211,45 @@ def save_gepa_prompt(
     return prompt_path
 
 
-def find_checkpoint(ckpt_dir: str, step: int) -> Optional[str]:
-    """Find the actor checkpoint for a given step."""
+def _list_saved_ckpt_steps(ckpt_root: Path) -> List[int]:
+    steps: List[int] = []
+    for entry in ckpt_root.glob("global_step_*"):
+        if not entry.is_dir():
+            continue
+        suffix = entry.name.removeprefix("global_step_")
+        if suffix.isdigit():
+            steps.append(int(suffix))
+    return sorted(steps)
+
+
+def resolve_checkpoint(ckpt_dir: str, val_step: int) -> Optional[tuple[int, str]]:
+    """Map a training val step to the nearest saved actor checkpoint."""
     ckpt_root = Path(ckpt_dir)
-    ckpt_path = ckpt_root / f"global_step_{step}" / "actor"
-    if ckpt_path.exists():
-        return str(ckpt_path)
-    ckpt_path_alt = OUTPUTS_DIR / ckpt_dir / f"global_step_{step}" / "actor"
+    exact = ckpt_root / f"global_step_{val_step}" / "actor"
+    if exact.exists():
+        return val_step, str(exact)
+    ckpt_path_alt = OUTPUTS_DIR / ckpt_dir / f"global_step_{val_step}" / "actor"
     if ckpt_path_alt.exists():
-        return str(ckpt_path_alt)
+        return val_step, str(ckpt_path_alt)
+
+    saved = _list_saved_ckpt_steps(ckpt_root)
+    prior = [s for s in saved if s <= val_step]
+    ckpt_step = max(prior) if prior else (saved[0] if saved else None)
+    if ckpt_step is None:
+        return None
+    ckpt_path = ckpt_root / f"global_step_{ckpt_step}" / "actor"
+    if ckpt_path.exists():
+        return ckpt_step, str(ckpt_path)
     return None
+
+
+def find_checkpoint(ckpt_dir: str, step: int) -> Optional[str]:
+    """Find the actor checkpoint for a given step (exact match only)."""
+    resolved = resolve_checkpoint(ckpt_dir, step)
+    if resolved is None:
+        return None
+    ckpt_step, ckpt_path = resolved
+    return ckpt_path if ckpt_step == step else None
 
 
 def submit_eval_job(
@@ -314,20 +343,39 @@ def monitor_grpo(states: Dict[str, ExperimentState], grpo_outputs_dir: Path, dry
                 updated = True
                 print(f"  *** NEW BEST for {name}: {score:.4f} at step {step} ***", flush=True)
 
-                if step in state.eval_submitted_steps:
-                    print(f"  (eval already submitted for step {step}, skipping)")
-                    continue
-
-                ckpt_path = find_checkpoint(exp["ckpt_dir"], step)
-                if ckpt_path:
-                    job_id = submit_eval_job(
-                        exp["config"], exp["eval_job_tag"], ckpt_path, step, exp["addr_file"], dry_run
-                    )
-                    if job_id or dry_run:
-                        state.eval_submitted_steps.append(step)
-                else:
-                    print(f"  Checkpoint not found for step {step}, will retry next poll")
+                maybe_submit_grpo_eval(name, exp, state, dry_run)
     return updated
+
+
+def maybe_submit_grpo_eval(name: str, exp: dict, state: ExperimentState, dry_run: bool) -> bool:
+    """Submit eval for current val best if not yet submitted and a checkpoint exists."""
+    if state.best_step < 0:
+        return False
+    if state.best_step in state.eval_submitted_steps:
+        return False
+
+    resolved = resolve_checkpoint(exp["ckpt_dir"], state.best_step)
+    if resolved is None:
+        print(
+            f"  [{name}] No checkpoint yet for val best step {state.best_step}, will retry next poll",
+            flush=True,
+        )
+        return False
+
+    ckpt_step, ckpt_path = resolved
+    if ckpt_step != state.best_step:
+        print(
+            f"  [{name}] Using global_step_{ckpt_step} checkpoint for val best step {state.best_step}",
+            flush=True,
+        )
+
+    job_id = submit_eval_job(
+        exp["config"], exp["eval_job_tag"], ckpt_path, ckpt_step, exp["addr_file"], dry_run
+    )
+    if job_id or dry_run:
+        state.eval_submitted_steps.append(state.best_step)
+        return True
+    return False
 
 
 def monitor_gepa(states: Dict[str, ExperimentState], dry_run: bool) -> bool:
@@ -448,6 +496,9 @@ def monitor_loop(poll_interval: int, grpo_outputs_dir: Path, dry_run: bool) -> N
     while True:
         updated = monitor_grpo(states, grpo_outputs_dir, dry_run)
         updated = monitor_gepa(states, dry_run) or updated
+        for grpo_name, grpo_exp in EXPERIMENTS.items():
+            if maybe_submit_grpo_eval(grpo_name, grpo_exp, states[grpo_name], dry_run):
+                updated = True
 
         if updated:
             save_best_scores(states)
