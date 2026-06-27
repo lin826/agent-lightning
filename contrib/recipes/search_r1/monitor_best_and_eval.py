@@ -28,6 +28,7 @@ EVAL_TEMPLATE = RECIPE_DIR / "eval_checkpoint.bsub"
 # Absolute checkpoint root — must match CHECKPOINT_ROOT in train_search_r1_agent.py.
 # Each experiment writes to its own subdirectory.
 CHECKPOINT_ROOT = "/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/checkpoints"
+SAVE_FREQ = 10
 
 EXPERIMENTS = {
     "qwen7b": {
@@ -125,14 +126,22 @@ def parse_new_val_scores(log_path: Path, last_pos: int) -> List[tuple[int, float
     return scores
 
 
-def find_checkpoint(ckpt_dir: str, step: int) -> Optional[str]:
-    """Find the actor checkpoint for a given step."""
-    ckpt_path = RECIPE_DIR / ckpt_dir / f"global_step_{step}" / "actor"
-    if ckpt_path.exists():
-        return str(ckpt_path)
-    ckpt_path_alt = OUTPUTS_DIR / ckpt_dir / f"global_step_{step}" / "actor"
+def find_checkpoint(ckpt_dir: str, step: int) -> Optional[tuple[str, int]]:
+    """Find the actor checkpoint for a given step.
+
+    Tries the exact step first, then the nearest saved step at or below it
+    (checkpoints are written every SAVE_FREQ steps).
+    Returns (path, resolved_step) or None.
+    """
+    base = Path(ckpt_dir)
+    start = (step // SAVE_FREQ) * SAVE_FREQ
+    for try_step in range(start, -1, -SAVE_FREQ):
+        ckpt_path = base / f"global_step_{try_step}" / "actor"
+        if ckpt_path.exists():
+            return str(ckpt_path), try_step
+    ckpt_path_alt = OUTPUTS_DIR / Path(ckpt_dir).name / f"global_step_{step}" / "actor"
     if ckpt_path_alt.exists():
-        return str(ckpt_path_alt)
+        return str(ckpt_path_alt), step
     return None
 
 
@@ -213,10 +222,13 @@ def monitor_loop(poll_interval: int, dry_run: bool) -> None:
                         print(f"  (eval already submitted for step {step}, skipping)")
                         continue
 
-                    ckpt_path = find_checkpoint(exp["ckpt_dir"], step)
-                    if ckpt_path:
+                    ckpt = find_checkpoint(exp["ckpt_dir"], step)
+                    if ckpt:
+                        ckpt_path, ckpt_step = ckpt
+                        if ckpt_step != step:
+                            print(f"  Using checkpoint at step {ckpt_step} (val best at step {step})", flush=True)
                         job_id = submit_eval_job(
-                            exp["config"], exp["eval_job_tag"], ckpt_path, step, exp["addr_file"], dry_run
+                            exp["config"], exp["eval_job_tag"], ckpt_path, ckpt_step, exp["addr_file"], dry_run
                         )
                         if job_id or dry_run:
                             state.eval_submitted_steps.append(step)
