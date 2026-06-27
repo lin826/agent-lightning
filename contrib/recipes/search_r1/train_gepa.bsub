@@ -11,6 +11,12 @@
 # GEPA prompt-optimization baseline for Search-R1 (HotpotQA, Qwen2.5-3B-Instruct).
 # Compares frozen-weight reflective prompt evolution against GRPO fine-tuning.
 # Requires serve_retrieval_gepa.bsub (BM25) running; starts a local vLLM server for inference.
+#
+# Submit serve first, then train with an LSF dependency so train stays PEND (no GPUs)
+# until the BM25 job has started (do not use done() — serve is long-running):
+#   SERVE_JID=$(bsub < serve_retrieval_gepa.bsub | sed -n 's/.*Job <\([0-9]*\)>.*/\1/p')
+#   bsub -w "started(${SERVE_JID})" < train_gepa.bsub
+# ADDR_FILE is still polled briefly after serve starts (index load).
 
 set -euo pipefail
 
@@ -25,6 +31,7 @@ set -a
 # shellcheck source=/dev/null
 source "${RECIPE}/.env"
 set +a
+export WANDB_ENTITY=youriju4
 
 export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
 # Caches on /proj (not /u/zwhong home -- avoids home-dir quota).
