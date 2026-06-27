@@ -320,6 +320,8 @@ def main() -> None:
     if resume_path:
         config["trainer"]["resume_mode"] = "resume_path"
         config["trainer"]["resume_from_path"] = resume_path
+        # Initial validation is skipped automatically when global_steps > 0 after load;
+        # test_freq still controls per-step validation during the resumed loop.
         print(f"Resuming from checkpoint: {resume_path}")
 
     print(f"Starting training with '{args.config}' configuration...")

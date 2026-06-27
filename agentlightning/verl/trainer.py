@@ -210,6 +210,17 @@ class AgentLightningTrainer(RayPPOTrainer):
                 return float(val_metrics[alt_key])
         return None
 
+    def _should_run_val_before_train(self) -> bool:
+        """Return whether to run validation before the training loop starts."""
+        if self.val_reward_fn is None:
+            return False
+        if not self.config.trainer.get("val_before_train", True):
+            return False
+        # Skip redundant validation when resuming training; eval-only jobs still run it.
+        if self.global_steps > 0 and not self.config.trainer.get("val_only", False):
+            return False
+        return True
+
     def _write_best_val_meta(self, score: float) -> None:
         default_dir = self.config.trainer.get("default_local_dir")
         if not default_dir:
@@ -537,7 +548,7 @@ class AgentLightningTrainer(RayPPOTrainer):
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None and self.config.trainer.get("val_before_train", True):
+        if self._should_run_val_before_train():
             val_metrics = self._validate()
             assert val_metrics, f"{val_metrics=}"
             pprint(f"Initial validation metrics: {val_metrics}")
