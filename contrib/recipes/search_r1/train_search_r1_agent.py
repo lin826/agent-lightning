@@ -311,6 +311,9 @@ def main() -> None:
     # Optional resume from a specific checkpoint. Set VERL_RESUME_FROM_PATH to an
     # absolute global_step_N directory; pair with WANDB_RUN_ID + WANDB_RESUME=allow
     # in the environment so the resumed steps append to the original WandB run.
+    # On a fresh run, VERL saves the run id to {default_local_dir}/wandb_run_id.txt
+    # after wandb.init; full-test eval jobs read that file to log test/* metrics
+    # on the same run.
     resume_path = os.environ.get("VERL_RESUME_FROM_PATH")
     if resume_path:
         config["trainer"]["resume_mode"] = "resume_path"

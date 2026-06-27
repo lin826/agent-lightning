@@ -7,6 +7,7 @@ from __future__ import annotations
 import random
 from contextlib import contextmanager
 from copy import deepcopy
+from pathlib import Path
 from pprint import pprint
 from typing import Dict, Tuple, Type
 
@@ -187,6 +188,34 @@ class AgentLightningTrainer(RayPPOTrainer):
         self.adapter = adapter
         self.daemon_cls = daemon_cls
 
+    def _apply_val_metric_prefix(self, metrics: Dict[str, object]) -> Dict[str, object]:
+        prefix = self.config.trainer.get("val_metric_prefix")
+        if not prefix or prefix == "val":
+            return metrics
+        return {
+            (key.replace("val/", f"{prefix}/", 1) if key.startswith("val/") else key): value
+            for key, value in metrics.items()
+        }
+
+    def _save_wandb_run_id(self) -> None:
+        try:
+            import wandb
+
+            if wandb.run is None:
+                return
+            default_dir = self.config.trainer.get("default_local_dir")
+            if not default_dir:
+                return
+            path = Path(default_dir) / "wandb_run_id.txt"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            run_id = wandb.run.id
+            if path.exists() and path.read_text().strip() == run_id:
+                return
+            path.write_text(run_id + "\n")
+            print(f"Saved WandB run id {run_id} to {path}")
+        except Exception as exc:
+            print(f"Warning: could not save WandB run id: {exc}")
+
     def _validate(self):
         assert len(self.val_dataloader) == 1, "Please set val_batch_size to None for better throughput."
 
@@ -200,7 +229,7 @@ class AgentLightningTrainer(RayPPOTrainer):
             is_train=False,
         )
         self.agent_mode_daemon.run_until_all_finished()
-        test_metrics = self.agent_mode_daemon.get_test_metrics()
+        test_metrics = self._apply_val_metric_prefix(self.agent_mode_daemon.get_test_metrics())
         self.agent_mode_daemon.clear_data_and_server()
         self.async_rollout_manager.sleep()
         return test_metrics
@@ -442,11 +471,16 @@ class AgentLightningTrainer(RayPPOTrainer):
             default_backend=self.config.trainer.logger,
             config=OmegaConf.to_container(self.config, resolve=True),
         )
+        self._save_wandb_run_id()
 
         self.global_steps = 0
 
         # load checkpoint before doing anything
         self._load_checkpoint()
+
+        eval_global_step = self.config.trainer.get("eval_global_step")
+        if eval_global_step is not None:
+            self.global_steps = int(eval_global_step)
 
         assert self.async_rollout_mode, "If agent mode is enabled, async server must be enabled"
         if self.adapter is not None and not isinstance(self.adapter, TraceToTripletBase):

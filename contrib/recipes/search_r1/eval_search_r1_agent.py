@@ -1,22 +1,25 @@
 """Standalone evaluation script for Search-R1 checkpoints.
 
 Usage:
-    python eval_search_r1_agent.py <config> <checkpoint_path>
+    python eval_search_r1_agent.py <config> <checkpoint_path> [--step N]
+
+Full test.parquet metrics (``test/em``, ``test/reward``) are logged to the original
+training WandB run at the given global step. Resolve the run id from
+``WANDB_RUN_ID``, ``{checkpoint_root}/wandb_run_id.txt``, or local ``wandb/`` logs.
 
 Examples:
-    python eval_search_r1_agent.py qwen7b checkpoints/searchr1_checkpoints/global_step_10/actor
-    python eval_search_r1_agent.py qwen3_8b_rewrite checkpoints/searchr1_checkpoints/global_step_20/actor
+    python eval_search_r1_agent.py qwen7b checkpoints/searchr1_qwen7b/global_step_10/actor --step 10
+    python eval_search_r1_agent.py qwen3_8b_rewrite checkpoints/searchr1_qwen3_8b_rewrite/global_step_20/actor --step 20
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, Dict
 
 import pandas as pd
-from search_r1_agent import SearchR1Agent, SearchR1RewriteAgent
 
 import agentlightning as agl
 
@@ -28,6 +31,13 @@ from train_search_r1_agent import (
     config_train_qwen3_8b_shaped,
     config_train_qwen7b,
 )
+from wandb_run import checkpoint_root_from_actor, find_wandb_run_id_from_local, resolve_wandb_run_id, setup_wandb_resume
+
+_RECIPE_DIR = Path(__file__).resolve().parent
+_GRPO_TRAIN_WANDB_DIR = (
+    Path("/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.claude/worktrees")
+    / "feature+searchr1-qwen25-repro-qwen3-eval/contrib/recipes/search_r1/wandb"
+)
 
 
 def make_eval_config(base_config: Dict[str, Any], checkpoint_path: str, step: int) -> Dict[str, Any]:
@@ -38,7 +48,8 @@ def make_eval_config(base_config: Dict[str, Any], checkpoint_path: str, step: in
     config["data_source_filter"] = "hotpotqa"
     config["trainer"]["val_only"] = True
     config["trainer"]["val_before_train"] = True
-    config["trainer"]["experiment_name"] = config["trainer"]["experiment_name"] + f"_eval_step{step}"
+    config["trainer"]["eval_global_step"] = step
+    config["trainer"]["val_metric_prefix"] = "test"
     return config
 
 
@@ -50,7 +61,8 @@ def main() -> None:
         help="Which experiment config to base evaluation on",
     )
     parser.add_argument("checkpoint_path", help="Path to the actor checkpoint directory (e.g. global_step_N/actor)")
-    parser.add_argument("--step", type=int, default=0, help="Training step (used for WandB run naming)")
+    parser.add_argument("--step", type=int, required=True, help="Training global step to log full-test metrics at")
+    parser.add_argument("--wandb-run-id", default=None, help="Override WandB run id (default: auto-resolve)")
     args = parser.parse_args()
 
     config_functions = {
@@ -62,10 +74,29 @@ def main() -> None:
     }
 
     base_config = config_functions[args.config]()
-    config = make_eval_config(base_config, args.checkpoint_path, args.step)
+    checkpoint_path = Path(args.checkpoint_path)
+    checkpoint_root = checkpoint_root_from_actor(checkpoint_path)
+    run_id = args.wandb_run_id or resolve_wandb_run_id(
+        checkpoint_dir=checkpoint_root,
+        experiment_name=base_config["trainer"]["experiment_name"],
+        wandb_dir=_RECIPE_DIR / "wandb",
+    )
+    if not run_id:
+        for wandb_dir in (_RECIPE_DIR / "wandb", _GRPO_TRAIN_WANDB_DIR):
+            run_id = find_wandb_run_id_from_local(wandb_dir, base_config["trainer"]["experiment_name"])
+            if run_id:
+                break
+    if run_id:
+        setup_wandb_resume(run_id)
+        print(f"Resuming WandB run {run_id} for full-test eval at step {args.step}")
+    else:
+        print(
+            "WARNING: WandB run id not found (set WANDB_RUN_ID or save wandb_run_id.txt under checkpoint root); "
+            "eval may create a separate run"
+        )
 
-    # build_agent matches the rollout structure (rewrite vs not) of the training
-    # variant; validation always reports pure EM regardless of alpha/beta.
+    config = make_eval_config(base_config, str(checkpoint_path), args.step)
+
     agent = build_agent(args.config)
 
     algorithm = agl.VERL(config)

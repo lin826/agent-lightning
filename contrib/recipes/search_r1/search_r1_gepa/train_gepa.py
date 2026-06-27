@@ -43,6 +43,7 @@ from search_r1_gepa.search_r1_gepa_adapter import (  # noqa: E402
     make_openai_llm_call,
 )
 from search_r1_agent import INSTRUCTION_FORMAT  # noqa: E402
+from wandb_run import save_wandb_run_id  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -196,6 +197,7 @@ def main() -> None:
         import wandb
 
         if wandb.run is not None:
+            save_wandb_run_id(args.run_dir, wandb.run.id)
             wandb.log(
                 {
                     "val/em": best_val_em,

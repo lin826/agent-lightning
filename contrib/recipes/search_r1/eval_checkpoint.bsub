@@ -40,6 +40,13 @@ until [ -f "${ADDR_FILE}" ]; do sleep 5; done
 export RETRIEVAL_SERVER_URL=$(cat "${ADDR_FILE}")
 echo "Retrieval server ready: ${RETRIEVAL_SERVER_URL}"
 
+CKPT_DIR=$(dirname "$(dirname "%CKPT_PATH%")")
+if [ -f "${CKPT_DIR}/wandb_run_id.txt" ]; then
+  export WANDB_RUN_ID=$(tr -d '[:space:]' < "${CKPT_DIR}/wandb_run_id.txt")
+  export WANDB_RESUME=allow
+  echo "Resuming WandB run ${WANDB_RUN_ID} from ${CKPT_DIR}/wandb_run_id.txt"
+fi
+
 ${RAY} stop -v --force --grace-period 60 || true
 env RAY_DEBUG=legacy HYDRA_FULL_ERROR=1 VLLM_USE_V1=1 \
     ${RAY} start --head --dashboard-host=0.0.0.0
