@@ -93,8 +93,12 @@ def main() -> None:
     api_base = os.environ.get("OPENAI_API_BASE", "")
     if not api_base:
         raise RuntimeError("OPENAI_API_BASE must point to the vLLM OpenAI server.")
-    if not os.environ.get("RETRIEVAL_SERVER_URL"):
-        raise RuntimeError("RETRIEVAL_SERVER_URL must be set (BM25 retrieval server).")
+    if not os.environ.get("RETRIEVAL_SERVER_URL") and not (
+        os.environ.get("RETRIEVAL_SERVER_ADDR_FILE") or os.environ.get("ADDR_FILE")
+    ):
+        raise RuntimeError(
+            "RETRIEVAL_SERVER_URL or RETRIEVAL_SERVER_ADDR_FILE/ADDR_FILE must be set (BM25 retrieval server)."
+        )
 
     instruction = args.prompt_file.read_text()
     candidate = {INSTRUCTION_COMPONENT: instruction}

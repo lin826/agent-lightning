@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 import pandas as pd
@@ -72,26 +73,160 @@ def execute_response(response: str, do_search: bool = True) -> str:
         )
 
 
+_RETRIEVAL_CONNECT_ERRORS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ConnectTimeout,
+    requests.exceptions.ReadTimeout,
+)
+_RETRIEVAL_MAX_RETRIES = 3
+_RETRIEVAL_BACKOFF_BASE_S = 1.0
+_RETRIEVAL_REQUEST_TIMEOUT_S = 30.0
+
+_cached_retrieval_url: Optional[str] = None
+_cached_addr_file: Optional[str] = None
+
+
+def _recipe_outputs_dir() -> Path:
+    return Path(__file__).resolve().parent.parent / "outputs"
+
+
+def _read_url_from_addr_file(addr_file: str) -> Optional[str]:
+    if addr_file and os.path.isfile(addr_file):
+        with open(addr_file) as f:
+            url = f.read().strip()
+            if url:
+                return url.rstrip("/")
+    return None
+
+
+def _resolve_addr_file_path() -> Optional[str]:
+    for key in ("RETRIEVAL_SERVER_ADDR_FILE", "ADDR_FILE"):
+        path = os.environ.get(key, "")
+        if path and os.path.isfile(path):
+            return path
+    return None
+
+
+def _find_addr_file_matching_url(url: str) -> Optional[str]:
+    explicit = _resolve_addr_file_path()
+    if explicit:
+        return explicit
+    outputs = _recipe_outputs_dir()
+    if not outputs.is_dir():
+        return None
+    normalized = url.rstrip("/")
+    for path in sorted(outputs.glob("bm25_server_addr_*.txt")):
+        try:
+            content = path.read_text().strip().rstrip("/")
+            if content == normalized:
+                return str(path)
+        except OSError:
+            continue
+    return None
+
+
+def _ensure_retrieval_cache() -> str:
+    global _cached_retrieval_url, _cached_addr_file
+    if _cached_retrieval_url is not None:
+        return _cached_retrieval_url
+
+    url = os.environ.get("RETRIEVAL_SERVER_URL", "").rstrip("/")
+    if not url:
+        addr_file = _resolve_addr_file_path()
+        if addr_file:
+            url = _read_url_from_addr_file(addr_file) or ""
+            _cached_addr_file = addr_file
+    if not url:
+        url = "http://127.0.0.1:8000"
+
+    if _cached_addr_file is None:
+        _cached_addr_file = _find_addr_file_matching_url(url)
+
+    _cached_retrieval_url = url
+    return url
+
+
+def _refresh_retrieval_url() -> Optional[str]:
+    """Re-read the BM25 addr file and update the cached retrieval URL."""
+    global _cached_retrieval_url, _cached_addr_file
+    addr_file = _cached_addr_file or _resolve_addr_file_path()
+    if not addr_file:
+        logger.warning("Cannot refresh retrieval URL: no addr file path known")
+        return None
+    new_url = _read_url_from_addr_file(addr_file)
+    if not new_url:
+        logger.warning("Cannot refresh retrieval URL: addr file %s empty or missing", addr_file)
+        return None
+    old_url = _cached_retrieval_url
+    _cached_retrieval_url = new_url
+    _cached_addr_file = addr_file
+    os.environ["RETRIEVAL_SERVER_URL"] = new_url
+    if new_url != old_url:
+        logger.info("Refreshed retrieval URL from %s: %s -> %s", addr_file, old_url, new_url)
+    else:
+        logger.info("Retrieval URL unchanged after re-read from %s: %s", addr_file, new_url)
+    return new_url
+
+
 def _retrieval_url() -> str:
     """Return the retrieval server base URL.
 
-    Resolution order: ``RETRIEVAL_SERVER_URL`` env var → URL read from the
-    file named by ``RETRIEVAL_SERVER_ADDR_FILE`` → localhost fallback.
+    Resolution order: cached URL → ``RETRIEVAL_SERVER_URL`` env var → URL read
+    from ``RETRIEVAL_SERVER_ADDR_FILE`` / ``ADDR_FILE`` → localhost fallback.
     """
-    url = os.environ.get("RETRIEVAL_SERVER_URL", "")
-    if url:
-        return url.rstrip("/")
-    addr_file = os.environ.get("RETRIEVAL_SERVER_ADDR_FILE", "")
-    if addr_file and os.path.isfile(addr_file):
-        with open(addr_file) as f:
-            return f.read().strip().rstrip("/")
-    return "http://127.0.0.1:8000"
+    return _ensure_retrieval_cache()
+
+
+def _retrieval_post(query: str) -> requests.Response:
+    url = _retrieval_url()
+    last_exc: Optional[Exception] = None
+
+    for attempt in range(_RETRIEVAL_MAX_RETRIES):
+        try:
+            response = requests.post(
+                f"{url}/search",
+                json={"query": query},
+                timeout=_RETRIEVAL_REQUEST_TIMEOUT_S,
+            )
+            response.raise_for_status()
+            return response
+        except _RETRIEVAL_CONNECT_ERRORS as exc:
+            last_exc = exc
+            if attempt + 1 < _RETRIEVAL_MAX_RETRIES:
+                sleep_time = _RETRIEVAL_BACKOFF_BASE_S * (2**attempt)
+                logger.warning(
+                    "Retrieval request failed (attempt %d/%d) at %s: %s; retrying in %.1fs",
+                    attempt + 1,
+                    _RETRIEVAL_MAX_RETRIES,
+                    url,
+                    exc,
+                    sleep_time,
+                )
+                time.sleep(sleep_time)
+                continue
+            break
+
+    logger.warning("Retrieval retries exhausted at %s; re-reading addr file", url)
+    _refresh_retrieval_url()
+    retry_url = _retrieval_url()
+    try:
+        response = requests.post(
+            f"{retry_url}/search",
+            json={"query": query},
+            timeout=_RETRIEVAL_REQUEST_TIMEOUT_S,
+        )
+        response.raise_for_status()
+        return response
+    except Exception as exc:
+        logger.error("Retrieval request failed after addr-file refresh at %s: %s", retry_url, exc)
+        if last_exc is not None:
+            raise last_exc from exc
+        raise
 
 
 def retrieve_doc(query: str) -> str:
-    url = _retrieval_url()
-    response = requests.post(f"{url}/search", json={"query": query})
-    response.raise_for_status()
+    response = _retrieval_post(query)
     json_resp: Dict[str, Any] = cast(Dict[str, Any], response.json())
     passages: List[str] = cast(List[str], json_resp["passages"])
     # Drop the trailing "Other retrieved pages have titles: …" summary entry.
@@ -365,9 +500,7 @@ class SearchR1RewriteAgent(LitAgent[Dict[str, Any]]):
 
 def _retrieve_passages(query: str) -> List[str]:
     """Retrieve raw passages (before formatting) for reward computation."""
-    url = _retrieval_url()
-    response = requests.post(f"{url}/search", json={"query": query})
-    response.raise_for_status()
+    response = _retrieval_post(query)
     json_resp: Dict[str, Any] = cast(Dict[str, Any], response.json())
     passages: List[str] = cast(List[str], json_resp["passages"])
     return [p for p in passages if not p.startswith("Other retrieved pages")][:3]
