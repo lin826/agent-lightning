@@ -27,11 +27,11 @@ To compare **Genetic-Pareto prompt evolution** (GEPA) against GRPO weight update
 
 - **Task model:** `Qwen/Qwen2.5-3B-Instruct` (frozen weights; only the instruction prompt evolves)
 - **Data:** `hotpotqa` filter on `data/train.parquet` / `data/test_dev.parquet` (same as `qwen7b` / `qwen3_8b` GRPO configs)
-- **Retrieval:** BM25 server from `serve_retrieval.bsub`
+- **Retrieval:** dedicated BM25 server from `serve_retrieval_gepa.bsub` (`bm25_server_addr_gepa.txt`)
 - **Metric:** exact match via `qa_em.py`
 - **WandB:** project `AgentLightning`, run `searchr1_qwen25_3b_gepa`
 
-1. Ensure the BM25 retrieval server is running (`serve_retrieval.bsub`).
+1. Start the GEPA-dedicated BM25 retrieval server (`bsub < serve_retrieval_gepa.bsub`).
 2. Submit the GEPA job:
 
 ```bash
@@ -39,6 +39,21 @@ bsub < train_gepa.bsub
 ```
 
 Optional env vars: `GEPA_MAX_METRIC_CALLS` (default 1500), `GEPA_REFLECTION_LM` (default: same local vLLM endpoint).
+
+### Retrieval server pairing (GRPO + GEPA)
+
+Each training or eval job must use its **own** BM25 retrieval server. Do not share `serve_retrieval_*.bsub` or `bm25_server_addr_*.txt` across variants.
+
+| Variant | LSF job name | Serve script | Addr file | Train script |
+| :--- | :--- | :--- | :--- | :--- |
+| baseline (`qwen7b`) | `serve_bm25_qwen25_3b_baseline` | `serve_retrieval_baseline.bsub` | `bm25_server_addr_baseline.txt` | `train_qwen3b.bsub` |
+| baseline_a (`qwen3_8b`) | `serve_bm25_qwen25_3b_baseline_a` | `serve_retrieval_baseline_a.bsub` | `bm25_server_addr_baseline_a.txt` | `train_qwen3b_a.bsub` |
+| rewrite | `serve_bm25_qwen25_3b_rewrite` | `serve_retrieval_rewrite.bsub` | `bm25_server_addr_rewrite.txt` | `train_qwen3b_rewrite.bsub` |
+| rewrite_em | `serve_bm25_qwen25_3b_rewrite_em` | `serve_retrieval_rewrite_em.bsub` | `bm25_server_addr_rewrite_em.txt` | `train_qwen3b_rewrite_em.bsub` |
+| shaped | `serve_bm25_qwen25_3b_shaped` | `serve_retrieval_shaped.bsub` | `bm25_server_addr_shaped.txt` | `train_qwen3b_shaped.bsub` |
+| gepa | `serve_bm25_qwen25_3b_gepa` | `serve_retrieval_gepa.bsub` | `bm25_server_addr_gepa.txt` | `train_gepa.bsub` |
+
+Submit the serve job first, then the matching train job (train scripts poll until the addr file appears).
 
 ---
 

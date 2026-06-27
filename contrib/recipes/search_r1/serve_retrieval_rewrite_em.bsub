@@ -1,15 +1,15 @@
 #!/bin/bash
-#BSUB -J serve_bm25_qwen25_3b_rewrite
+#BSUB -J serve_bm25_qwen25_3b_rewrite_em
 #BSUB -G grp_runtime
 #BSUB -q normal
 #BSUB -n 56
 #BSUB -R "span[hosts=1] rusage[mem=512GB]"
 #BSUB -gpu "num=8:mode=shared:j_exclusive=yes:gmodel=NVIDIAH10080GBHBM3"
-#BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_rewrite.%J.out
-#BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_rewrite.%J.err
+#BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_rewrite_em.%J.out
+#BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_rewrite_em.%J.err
 
-# Dedicated BM25 retrieval server for rewrite (train_qwen3b_rewrite.bsub).
-# Pair with train_qwen3b_rewrite.bsub only — do not share with other variants.
+# Dedicated BM25 retrieval server for rewrite_em (train_qwen3b_rewrite_em.bsub).
+# Pair with train_qwen3b_rewrite_em.bsub only — do not share with other variants.
 
 set -euo pipefail
 
@@ -17,7 +17,7 @@ PPLRL=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl
 PYTHON=${PPLRL}/.venv/bin/python
 WIKI=/proj/inf-scaling/zwhong/projs/asmi/code/dsl-agent/dspy_tutorial/wiki2017
 RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1
-ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_rewrite.txt
+ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_rewrite_em.txt
 
 export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
 # Caches on /proj (not /u/zwhong home -- avoids home-dir quota).

@@ -10,14 +10,14 @@
 
 # GEPA prompt-optimization baseline for Search-R1 (HotpotQA, Qwen2.5-3B-Instruct).
 # Compares frozen-weight reflective prompt evolution against GRPO fine-tuning.
-# Requires serve_retrieval.bsub (BM25) running; starts a local vLLM server for inference.
+# Requires serve_retrieval_gepa.bsub (BM25) running; starts a local vLLM server for inference.
 
 set -euo pipefail
 
 PPLRL=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl
 PYTHON=${PPLRL}/.venv/bin/python
 RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1
-ADDR_FILE=${RECIPE}/outputs/bm25_server_addr.txt
+ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_gepa.txt
 VLLM_PORT=8100
 VLLM_ADDR_FILE=${RECIPE}/outputs/vllm_gepa_addr.txt
 

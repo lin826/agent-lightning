@@ -9,7 +9,7 @@
 #BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_qwen3_8b_rewrite_em.%J.err
 
 # GRPO training for Search-R1 with Qwen2.5-3B-Instruct: question-rewrite + pure-EM reward.
-# Variant B (rewrite + pure-EM reward). Uses serve_retrieval_rewrite.bsub.
+# Variant B (rewrite + pure-EM reward). Uses serve_retrieval_rewrite_em.bsub.
 
 set -euo pipefail
 
@@ -17,7 +17,7 @@ PPLRL=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl
 PYTHON=${PPLRL}/.venv/bin/python
 RAY=${PPLRL}/.venv/bin/ray
 RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.claude/worktrees/feature+searchr1-qwen25-repro-qwen3-eval/contrib/recipes/search_r1
-ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_rewrite.txt
+ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_rewrite_em.txt
 
 set -a
 # shellcheck source=/dev/null

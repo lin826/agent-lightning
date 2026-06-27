@@ -1,16 +1,15 @@
 #!/bin/bash
-#BSUB -J serve_bm25_qwen25_3b_baseline_a
+#BSUB -J serve_bm25_qwen25_3b_gepa
 #BSUB -G grp_runtime
 #BSUB -q normal
 #BSUB -n 56
 #BSUB -R "span[hosts=1] rusage[mem=512GB]"
 #BSUB -gpu "num=8:mode=shared:j_exclusive=yes:gmodel=NVIDIAH10080GBHBM3"
-#BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_qwen3.%J.out
-#BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_qwen3.%J.err
+#BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_gepa.%J.out
+#BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_gepa.%J.err
 
-# Dedicated BM25 retrieval server for Qwen2.5-3B baseline_a and shaped variants.
-# Writes to a variant-specific addr file so it does not conflict with the
-# baseline server started by serve_retrieval.bsub.
+# Dedicated BM25 retrieval server for GEPA (train_gepa.bsub).
+# Pair with train_gepa.bsub only — do not share with other variants.
 
 set -euo pipefail
 
@@ -18,7 +17,7 @@ PPLRL=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl
 PYTHON=${PPLRL}/.venv/bin/python
 WIKI=/proj/inf-scaling/zwhong/projs/asmi/code/dsl-agent/dspy_tutorial/wiki2017
 RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1
-ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_qwen3.txt
+ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_gepa.txt
 
 export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
 # Caches on /proj (not /u/zwhong home -- avoids home-dir quota).

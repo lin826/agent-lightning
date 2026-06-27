@@ -20,6 +20,7 @@ Always commit the refreshed `uv.lock` when dependencies shift, and mention optio
 
 ## Checkpointing & Resume (VERL training jobs)
 - Each concurrent experiment MUST write to its own `trainer.default_local_dir` (e.g. `checkpoints/searchr1_<variant>/`). VERL saves to `{default_local_dir}/global_step_{N}`, so jobs sharing a directory silently overwrite each other's `global_step_N` and `latest_checkpointed_iteration.txt` — catastrophic when the runs use different model architectures. Prefer absolute paths to avoid CWD-resolution surprises.
+- Each training variant MUST have its own BM25 retrieval server (`serve_retrieval_<variant>.bsub` → `outputs/bm25_server_addr_<variant>.txt`). Sharing a server across variants causes cross-talk in retrieval load and addr-file races. See the pairing table in `contrib/recipes/search_r1/README.md`.
 - A resumed job that does NOT restart from step 1 must reuse the ORIGINAL WandB run id instead of creating a new run. Set `WANDB_RUN_ID=<original_id>` and `WANDB_RESUME=allow` in the job's environment; VERL calls `wandb.init(...)` without an explicit `id`/`resume`, so these env vars take effect and the resumed steps append to the same curve.
 
 ## Coding Style & Naming Conventions

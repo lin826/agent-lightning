@@ -1,15 +1,15 @@
 #!/bin/bash
-#BSUB -J serve_bm25_qwen25_3b_rewrite
+#BSUB -J serve_bm25_qwen25_3b_baseline
 #BSUB -G grp_runtime
 #BSUB -q normal
-#BSUB -n 56
+#BSUB -n 64
 #BSUB -R "span[hosts=1] rusage[mem=512GB]"
 #BSUB -gpu "num=8:mode=shared:j_exclusive=yes:gmodel=NVIDIAH10080GBHBM3"
-#BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_rewrite.%J.out
-#BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_rewrite.%J.err
+#BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_baseline.%J.out
+#BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_baseline.%J.err
 
-# Dedicated BM25 retrieval server for rewrite (train_qwen3b_rewrite.bsub).
-# Pair with train_qwen3b_rewrite.bsub only — do not share with other variants.
+# Dedicated BM25 retrieval server for the qwen7b baseline (train_qwen3b.bsub).
+# Pair with train_qwen3b.bsub only — do not share with other variants.
 
 set -euo pipefail
 
@@ -17,7 +17,7 @@ PPLRL=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl
 PYTHON=${PPLRL}/.venv/bin/python
 WIKI=/proj/inf-scaling/zwhong/projs/asmi/code/dsl-agent/dspy_tutorial/wiki2017
 RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1
-ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_rewrite.txt
+ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_baseline.txt
 
 export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
 # Caches on /proj (not /u/zwhong home -- avoids home-dir quota).
@@ -27,14 +27,18 @@ export TRITON_CACHE_DIR="${CACHE_ROOT}/triton"
 export XDG_CACHE_HOME="${CACHE_ROOT}/xdg"
 
 mkdir -p "${TRITON_CACHE_DIR}" "${XDG_CACHE_HOME}" "${RECIPE}/outputs"
+
+# Remove stale addr file so the training job does not connect to a dead server.
 rm -f "${ADDR_FILE}"
 
 cd "${PPLRL}"
 
+# Server writes ADDR_FILE only after the index is fully loaded.
 ${PYTHON} scripts/torch_bm25_server.py \
     --wiki-dir "${WIKI}" --bm25-device cuda --addr-file "${ADDR_FILE}" &
 SRV_PID=$!
 
+# Keepalive prevents the cluster from reaping idle GPUs between queries.
 ${PYTHON} scripts/gpu_keepalive.py &
 KEEP_PID=$!
 

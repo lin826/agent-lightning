@@ -9,7 +9,7 @@
 #BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_qwen3_8b_shaped.%J.err
 
 # GRPO training for Search-R1 with Qwen2.5-3B-Instruct: shaped reward without rewrite.
-# Variant D (shaped reward, no rewrite). Uses serve_retrieval_qwen3.bsub.
+# Variant D (shaped reward, no rewrite). Uses serve_retrieval_shaped.bsub.
 
 set -euo pipefail
 
@@ -17,7 +17,7 @@ PPLRL=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl
 PYTHON=${PPLRL}/.venv/bin/python
 RAY=${PPLRL}/.venv/bin/ray
 RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.claude/worktrees/feature+searchr1-qwen25-repro-qwen3-eval/contrib/recipes/search_r1
-ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_qwen3.txt
+ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_shaped.txt
 
 set -a
 # shellcheck source=/dev/null

@@ -9,7 +9,7 @@
 #BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_qwen7b.%J.err
 
 # GRPO training for Search-R1 with Qwen2.5-3B-Instruct.
-# Uses the BM25 retrieval server started by serve_retrieval.bsub; polls
+# Uses the BM25 retrieval server started by serve_retrieval_baseline.bsub; polls
 # ADDR_FILE until the server is ready before launching Ray and training.
 
 set -euo pipefail
@@ -17,7 +17,7 @@ set -euo pipefail
 PPLRL=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl
 PYTHON=${PPLRL}/.venv/bin/python
 RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.claude/worktrees/feature+searchr1-qwen25-repro-qwen3-eval/contrib/recipes/search_r1
-ADDR_FILE=${RECIPE}/outputs/bm25_server_addr.txt
+ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_baseline.txt
 
 # Load WANDB_API_KEY and other secrets from .env
 set -a

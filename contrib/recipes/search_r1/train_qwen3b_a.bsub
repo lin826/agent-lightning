@@ -9,7 +9,7 @@
 #BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_qwen3_8b.%J.err
 
 # GRPO training for Search-R1 with Qwen2.5-3B-Instruct.
-# Variant A (baseline). Uses dedicated retrieval server (serve_retrieval_qwen3.bsub).
+# Variant A (baseline). Uses dedicated retrieval server (serve_retrieval_baseline_a.bsub).
 
 set -euo pipefail
 
@@ -17,7 +17,7 @@ PPLRL=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl
 PYTHON=${PPLRL}/.venv/bin/python
 RAY=${PPLRL}/.venv/bin/ray
 RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.claude/worktrees/feature+searchr1-qwen25-repro-qwen3-eval/contrib/recipes/search_r1
-ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_qwen3.txt
+ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_baseline_a.txt
 
 set -a
 # shellcheck source=/dev/null
