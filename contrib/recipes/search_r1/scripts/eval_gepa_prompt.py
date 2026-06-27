@@ -6,6 +6,9 @@ Usage:
 Requires OPENAI_API_BASE (vLLM) and RETRIEVAL_SERVER_URL (BM25). Logs test/em and
 test/reward to the original searchr1_qwen25_3b_gepa WandB run (resume via
 WANDB_RUN_ID or outputs/gepa_qwen25_3b/wandb_run_id.txt).
+
+Environment:
+    GEPA_ROLLOUT_CONCURRENCY — parallel Search-R1 rollouts (default: 1; eval_gepa_prompt.bsub sets 2)
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ from search_r1_gepa.train_gepa import (  # noqa: E402
     WANDB_EXPERIMENT,
     WANDB_PROJECT,
     evaluate_split,
+    resolve_rollout_concurrency,
 )
 from wandb_run import resolve_wandb_run_id  # noqa: E402
 
@@ -77,6 +81,12 @@ def main() -> None:
         help="GEPA run directory containing wandb_run_id.txt",
     )
     parser.add_argument("--batch-size", type=int, default=20)
+    parser.add_argument(
+        "--rollout-concurrency",
+        type=int,
+        default=None,
+        help="Parallel Search-R1 rollouts per batch (default: GEPA_ROLLOUT_CONCURRENCY or 1)",
+    )
     parser.add_argument("--wandb-run-id", default=None, help="Override WandB run id (default: auto-resolve)")
     args = parser.parse_args()
 
@@ -90,8 +100,11 @@ def main() -> None:
     candidate = {INSTRUCTION_COMPONENT: instruction}
     test_data = load_test_dataset(args.data_dir)
 
+    rollout_concurrency = resolve_rollout_concurrency(args.rollout_concurrency)
+    logger.info("Rollout concurrency=%d", rollout_concurrency)
+
     llm_call = make_openai_llm_call(base_url=api_base, model=MODEL_NAME, default_temperature=0.0)
-    adapter = SearchR1GEPAAdapter(llm_call, eval_mode="val")
+    adapter = SearchR1GEPAAdapter(llm_call, eval_mode="val", rollout_concurrency=rollout_concurrency)
     test_em = evaluate_split(adapter, candidate, test_data, batch_size=args.batch_size)
 
     summary = {

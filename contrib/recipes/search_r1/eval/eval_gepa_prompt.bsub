@@ -21,6 +21,9 @@ ADDR_FILE=${RECIPE}/outputs/%ADDR_FILE%
 PROMPT_PATH=%PROMPT_PATH%
 VLLM_PORT=8101
 VLLM_ADDR_FILE=${RECIPE}/outputs/vllm_gepa_eval_addr.txt
+# Eval job reserves 2 GPUs; replicate Qwen2.5-3B with tp=1 dp=2.
+VLLM_DATA_PARALLEL_SIZE=${VLLM_DATA_PARALLEL_SIZE:-2}
+GEPA_ROLLOUT_CONCURRENCY=${GEPA_ROLLOUT_CONCURRENCY:-2}
 
 set -a
 # shellcheck source=/dev/null
@@ -42,13 +45,14 @@ export RETRIEVAL_SERVER_URL=$(cat "${ADDR_FILE}")
 echo "Retrieval server ready: ${RETRIEVAL_SERVER_URL}"
 
 rm -f "${VLLM_ADDR_FILE}"
-echo "Starting vLLM OpenAI server on port ${VLLM_PORT} ..."
+echo "Starting vLLM OpenAI server on port ${VLLM_PORT} (tp=1 dp=${VLLM_DATA_PARALLEL_SIZE}) ..."
 ${PYTHON} -m vllm.entrypoints.openai.api_server \
     --model Qwen/Qwen2.5-3B-Instruct \
     --served-model-name Qwen/Qwen2.5-3B-Instruct \
     --host 0.0.0.0 \
     --port "${VLLM_PORT}" \
     --tensor-parallel-size 1 \
+    --data-parallel-size "${VLLM_DATA_PARALLEL_SIZE}" \
     --gpu-memory-utilization 0.85 \
     --max-model-len 8192 \
     --disable-log-requests &
@@ -80,6 +84,7 @@ fi
 
 export OPENAI_API_BASE=$(cat "${VLLM_ADDR_FILE}")
 export OPENAI_API_KEY=${OPENAI_API_KEY:-token-abc123}
+export GEPA_ROLLOUT_CONCURRENCY=${GEPA_ROLLOUT_CONCURRENCY}
 
 GEPA_RUN_DIR=${RECIPE}/outputs/gepa_qwen25_3b
 if [ -f "${GEPA_RUN_DIR}/wandb_run_id.txt" ]; then
@@ -88,6 +93,6 @@ if [ -f "${GEPA_RUN_DIR}/wandb_run_id.txt" ]; then
   echo "Resuming WandB run ${WANDB_RUN_ID} from ${GEPA_RUN_DIR}/wandb_run_id.txt"
 fi
 
-echo "Evaluating prompt ${PROMPT_PATH} on full test.parquet (metric_calls=%METRIC_CALLS%) ..."
+echo "Evaluating prompt ${PROMPT_PATH} on full test.parquet (metric_calls=%METRIC_CALLS%, rollout_concurrency=${GEPA_ROLLOUT_CONCURRENCY}) ..."
 cd "${RECIPE}"
 ${PYTHON} scripts/eval_gepa_prompt.py "${PROMPT_PATH}" --metric-calls %METRIC_CALLS%
