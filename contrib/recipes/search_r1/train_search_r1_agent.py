@@ -138,6 +138,9 @@ def config_train_qwen7b() -> Dict[str, Any]:
     config["actor_rollout_ref"]["rollout"]["gpu_memory_utilization"] = 0.6
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["param_offload"] = False
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["optimizer_offload"] = False
+    config["actor_rollout_ref"]["actor"]["optim"]["lr_warmup_steps_ratio"] = 0.70
+    # Step-20 tuning (job 1764997): val/reward plateaued 0.375→0.38 while actor/lr≈6.7e-8
+    # (7% of 1e-6 with default 0.95 warmup). Faster warmup targets stronger updates after step 10.
     config["actor_rollout_ref"]["ref"]["fsdp_config"]["param_offload"] = False
     config["data"]["val_files"] = "data/test_dev.parquet"
     config["data_source_filter"] = "hotpotqa"
