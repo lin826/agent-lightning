@@ -99,8 +99,26 @@ def main() -> None:
         for step, metrics in iteration_metrics:
             logger.info("Would log iteration metrics at step %s: %s", step, metrics)
         logger.info("Would log final metrics at step %s: %s", total_metric_calls, final_metrics)
+        logger.info("Would update run summary with final + seed metrics")
         return
 
+    try:
+        from wandb.apis.public import Api
+
+        api = Api()
+        entity = os.environ.get("WANDB_ENTITY", "ibm-bv")
+        run = api.run(f"{entity}/{WANDB_PROJECT}/{args.run_id}")
+        run.summary.update(
+            {
+                **final_metrics,
+            }
+        )
+        run.summary.save()
+        logger.info("Updated run summary for %s", args.run_id)
+    except Exception as exc:
+        logger.warning("Could not update WandB summary via API: %s", exc)
+
+    # Append-only history: steps at or below the run's current max step are ignored by WandB.
     log_gepa_wandb_metrics(
         seed_metrics,
         step=0,
