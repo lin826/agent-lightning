@@ -31,7 +31,13 @@ set -a
 # shellcheck source=/dev/null
 source "${RECIPE}/.env"
 set +a
-export WANDB_ENTITY=youriju4
+
+GEPA_RUN_DIR=${RECIPE}/outputs/gepa_qwen25_3b
+if [ -f "${GEPA_RUN_DIR}/wandb_run_id.txt" ]; then
+  export WANDB_RUN_ID=$(tr -d '[:space:]' < "${GEPA_RUN_DIR}/wandb_run_id.txt")
+  export WANDB_RESUME=allow
+  echo "Resuming WandB run ${WANDB_RUN_ID} (entity=${WANDB_ENTITY:-default}) from ${GEPA_RUN_DIR}/wandb_run_id.txt"
+fi
 
 export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
 # Caches on /proj (not /u/zwhong home -- avoids home-dir quota).
