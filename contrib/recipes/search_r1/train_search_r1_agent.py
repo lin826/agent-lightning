@@ -80,7 +80,7 @@ RL_TRAINING_CONFIG: Dict[str, Any] = {
         "project_name": "AgentLightning",
         "experiment_name": "searchr1",
         "nnodes": 1,
-        "test_freq": 10,
+        "test_freq": 1,
         "save_freq": 10,
         "total_epochs": 15,
         "total_training_steps": 300,
@@ -127,14 +127,14 @@ def config_train_qwen() -> Dict[str, Any]:
 
 
 def config_train_qwen7b() -> Dict[str, Any]:
-    """A configuration for training with Qwen2.5-7B-Instruct on H100 80GB GPUs.
+    """A configuration for training with Qwen2.5-3B-Instruct on H100 80GB GPUs.
 
     Disables CPU offloading and raises vLLM GPU memory utilization to take
     advantage of the larger VRAM available on H100 80GB HBM3 GPUs.
     """
 
     config = deepcopy(RL_TRAINING_CONFIG)
-    config["actor_rollout_ref"]["model"]["path"] = "Qwen/Qwen2.5-7B-Instruct"
+    config["actor_rollout_ref"]["model"]["path"] = "Qwen/Qwen2.5-3B-Instruct"
     config["actor_rollout_ref"]["rollout"]["gpu_memory_utilization"] = 0.6
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["param_offload"] = False
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["optimizer_offload"] = False
@@ -147,14 +147,14 @@ def config_train_qwen7b() -> Dict[str, Any]:
 
 
 def config_train_qwen3_8b() -> Dict[str, Any]:
-    """A configuration for training with Qwen3-8B on H100 80GB GPUs.
+    """A configuration for training with Qwen2.5-3B-Instruct on H100 80GB GPUs.
 
     Uses gpu_memory_utilization=0.5 and ref param_offload to leave enough VRAM
     for vLLM KV cache re-allocation after FSDP training steps.
     """
 
     config = deepcopy(RL_TRAINING_CONFIG)
-    config["actor_rollout_ref"]["model"]["path"] = "Qwen/Qwen3-8B"
+    config["actor_rollout_ref"]["model"]["path"] = "Qwen/Qwen2.5-3B-Instruct"
     config["actor_rollout_ref"]["rollout"]["gpu_memory_utilization"] = 0.5
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["param_offload"] = False
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["optimizer_offload"] = False
@@ -167,14 +167,14 @@ def config_train_qwen3_8b() -> Dict[str, Any]:
 
 
 def config_train_qwen3_8b_rewrite() -> Dict[str, Any]:
-    """Configuration for the question-rewrite experiment with Qwen3-8B.
+    """Configuration for the question-rewrite experiment with Qwen2.5-3B-Instruct.
 
     Same hardware settings as qwen3_8b but uses the SearchR1RewriteAgent which
     adds a <rewrite> stage and a shaped reward (EM + retrieval-hit).
     """
 
     config = deepcopy(RL_TRAINING_CONFIG)
-    config["actor_rollout_ref"]["model"]["path"] = "Qwen/Qwen3-8B"
+    config["actor_rollout_ref"]["model"]["path"] = "Qwen/Qwen2.5-3B-Instruct"
     config["actor_rollout_ref"]["rollout"]["gpu_memory_utilization"] = 0.5
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["param_offload"] = False
     config["actor_rollout_ref"]["actor"]["fsdp_config"]["optimizer_offload"] = False
@@ -281,7 +281,7 @@ def main() -> None:
         ],
         help=(
             "Training configuration: 'fast' (CI testing), 'qwen' (Qwen-2.5-Coder-1.5B), "
-            "'qwen7b' (Qwen2.5-7B-Instruct, H100 80 GB), 'qwen3_8b' (Qwen3-8B baseline, variant A), "
+            "'qwen7b' (Qwen2.5-3B-Instruct, H100 80 GB), 'qwen3_8b' (Qwen2.5-3B-Instruct baseline, variant A), "
             "'qwen3_8b_rewrite' (rewrite + shaped reward, variant C), "
             "'qwen3_8b_rewrite_em' (rewrite + pure-EM reward, variant B), "
             "'qwen3_8b_shaped' (no rewrite + shaped reward, variant D), "
