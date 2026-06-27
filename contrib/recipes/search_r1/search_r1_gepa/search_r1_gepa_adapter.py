@@ -11,8 +11,14 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, Callable, TypedDict
+
+_SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from gepa.core.adapter import EvaluationBatch, GEPAAdapter
 from qa_em import compute_score_em, extract_solution

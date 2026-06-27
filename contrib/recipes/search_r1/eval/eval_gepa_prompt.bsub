@@ -32,7 +32,7 @@ CACHE_ROOT=/proj/inf-scaling/zwhong/.cache
 export HF_HOME="${CACHE_ROOT}/huggingface"
 export TRITON_CACHE_DIR="${CACHE_ROOT}/triton_gepa_eval"
 export XDG_CACHE_HOME="${CACHE_ROOT}/xdg_gepa_eval"
-export PYTHONPATH=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning:${PYTHONPATH:-}
+export PYTHONPATH=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning:${RECIPE}/scripts:${PYTHONPATH:-}
 
 mkdir -p "${TRITON_CACHE_DIR}" "${XDG_CACHE_HOME}"
 
@@ -90,4 +90,4 @@ fi
 
 echo "Evaluating prompt ${PROMPT_PATH} on full test.parquet (metric_calls=%METRIC_CALLS%) ..."
 cd "${RECIPE}"
-${PYTHON} eval_gepa_prompt.py "${PROMPT_PATH}" --metric-calls %METRIC_CALLS%
+${PYTHON} scripts/eval_gepa_prompt.py "${PROMPT_PATH}" --metric-calls %METRIC_CALLS%

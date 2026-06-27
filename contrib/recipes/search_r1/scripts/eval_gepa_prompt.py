@@ -19,9 +19,11 @@ from pathlib import Path
 
 import pandas as pd
 
-_RECIPE_DIR = Path(__file__).resolve().parent
-if str(_RECIPE_DIR) not in sys.path:
-    sys.path.insert(0, str(_RECIPE_DIR))
+_RECIPE_DIR = Path(__file__).resolve().parent.parent
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+for _path in (_RECIPE_DIR, _SCRIPTS_DIR):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 from search_r1_gepa.search_r1_gepa_adapter import (  # noqa: E402
     INSTRUCTION_COMPONENT,

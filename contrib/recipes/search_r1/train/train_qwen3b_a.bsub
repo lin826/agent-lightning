@@ -9,14 +9,14 @@
 #BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_qwen25_3b_baseline_a.%J.err
 
 # GRPO training for Search-R1 with Qwen2.5-3B-Instruct.
-# Variant A (baseline). Uses dedicated retrieval server (serve_retrieval_baseline_a.bsub).
+# Variant A (baseline). Uses dedicated retrieval server (serve/serve_retrieval_baseline_a.bsub).
 
 set -euo pipefail
 
 PPLRL=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl
 PYTHON=${PPLRL}/.venv/bin/python
 RAY=${PPLRL}/.venv/bin/ray
-RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.claude/worktrees/feature+searchr1-qwen25-repro-qwen3-eval/contrib/recipes/search_r1
+RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1
 ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_baseline_a.txt
 
 set -a
@@ -30,7 +30,7 @@ CACHE_ROOT=/proj/inf-scaling/zwhong/.cache
 export HF_HOME="${CACHE_ROOT}/huggingface"
 export TRITON_CACHE_DIR="${CACHE_ROOT}/triton"
 export XDG_CACHE_HOME="${CACHE_ROOT}/xdg"
-export PYTHONPATH=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.claude/worktrees/feature+searchr1-qwen25-repro-qwen3-eval:${PYTHONPATH:-}
+export PYTHONPATH=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning:${RECIPE}/scripts:${PYTHONPATH:-}
 
 echo "Waiting for retrieval server at ${ADDR_FILE} ..."
 until [ -f "${ADDR_FILE}" ]; do sleep 5; done
@@ -42,4 +42,4 @@ env RAY_DEBUG=legacy HYDRA_FULL_ERROR=1 VLLM_USE_V1=1 \
     ${RAY} start --head --dashboard-host=0.0.0.0
 
 cd "${RECIPE}"
-${PYTHON} train_search_r1_agent.py qwen3_8b
+${PYTHON} scripts/train_search_r1_agent.py qwen3_8b

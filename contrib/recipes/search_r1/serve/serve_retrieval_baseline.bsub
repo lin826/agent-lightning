@@ -8,8 +8,8 @@
 #BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_baseline.%J.out
 #BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_baseline.%J.err
 
-# Dedicated BM25 retrieval server for the qwen7b baseline (train_qwen3b.bsub).
-# Pair with train_qwen3b.bsub only — do not share with other variants.
+# Dedicated BM25 retrieval server for the qwen7b baseline (train/train_qwen3b.bsub).
+# Pair with train/train_qwen3b.bsub only — do not share with other variants.
 
 set -euo pipefail
 

@@ -9,7 +9,7 @@
 #BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_qwen25_3b_shaped.%J.err
 
 # GRPO training for Search-R1 with Qwen2.5-3B-Instruct: shaped reward without rewrite.
-# Variant D (shaped reward, no rewrite). Uses serve_retrieval_shaped.bsub.
+# Variant D (shaped reward, no rewrite). Uses serve/serve_retrieval_shaped.bsub.
 
 set -euo pipefail
 
@@ -30,7 +30,7 @@ CACHE_ROOT=/proj/inf-scaling/zwhong/.cache
 export HF_HOME="${CACHE_ROOT}/huggingface"
 export TRITON_CACHE_DIR="${CACHE_ROOT}/triton"
 export XDG_CACHE_HOME="${CACHE_ROOT}/xdg"
-export PYTHONPATH=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning:${PYTHONPATH:-}
+export PYTHONPATH=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning:${RECIPE}/scripts:${PYTHONPATH:-}
 
 CKPT_ROOT="/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/checkpoints/searchr1_qwen3_8b_shaped"
 STEP=$(tr -d '[:space:]' < "${CKPT_ROOT}/latest_checkpointed_iteration.txt")
@@ -49,4 +49,4 @@ env RAY_DEBUG=legacy HYDRA_FULL_ERROR=1 VLLM_USE_V1=1 \
     ${RAY} start --head --dashboard-host=0.0.0.0
 
 cd "${RECIPE}"
-${PYTHON} train_search_r1_agent.py qwen3_8b_shaped
+${PYTHON} scripts/train_search_r1_agent.py qwen3_8b_shaped

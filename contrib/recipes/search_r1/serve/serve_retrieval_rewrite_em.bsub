@@ -8,8 +8,8 @@
 #BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_rewrite_em.%J.out
 #BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_rewrite_em.%J.err
 
-# Dedicated BM25 retrieval server for rewrite_em (train_qwen3b_rewrite_em.bsub).
-# Pair with train_qwen3b_rewrite_em.bsub only — do not share with other variants.
+# Dedicated BM25 retrieval server for rewrite_em (train/train_qwen3b_rewrite_em.bsub).
+# Pair with train/train_qwen3b_rewrite_em.bsub only — do not share with other variants.
 
 set -euo pipefail
 

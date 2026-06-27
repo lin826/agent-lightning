@@ -5,8 +5,8 @@ best_score_on_valset, tracks best score per experiment, and submits full
 test.parquet eval jobs whenever a new best is detected.
 
 Usage:
-    python monitor_best_and_eval.py [--poll-interval 60] [--dry-run]
-    python monitor_best_and_eval.py --grpo-outputs-dir /path/to/worktree/outputs
+    python scripts/monitor_best_and_eval.py [--poll-interval 60] [--dry-run]
+    python scripts/monitor_best_and_eval.py --grpo-outputs-dir /path/to/outputs
 """
 
 from __future__ import annotations
@@ -20,11 +20,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-RECIPE_DIR = Path(__file__).resolve().parent
+RECIPE_DIR = Path(__file__).resolve().parent.parent
 OUTPUTS_DIR = RECIPE_DIR / "outputs"
+EVAL_GENERATED_DIR = RECIPE_DIR / "eval" / "generated"
 BEST_SCORES_FILE = OUTPUTS_DIR / "best_val_scores.json"
-EVAL_TEMPLATE = RECIPE_DIR / "eval_checkpoint.bsub"
-GEPA_EVAL_TEMPLATE = RECIPE_DIR / "eval_gepa_prompt.bsub"
+EVAL_TEMPLATE = RECIPE_DIR / "eval" / "eval_checkpoint.bsub"
+GEPA_EVAL_TEMPLATE = RECIPE_DIR / "eval" / "eval_gepa_prompt.bsub"
 
 # Absolute checkpoint root — must match CHECKPOINT_ROOT in train_search_r1_agent.py.
 CHECKPOINT_ROOT = "/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/checkpoints"
@@ -233,7 +234,8 @@ def submit_eval_job(
     script = script.replace("%CKPT_PATH%", checkpoint_path)
     script = script.replace("%ADDR_FILE%", addr_file)
 
-    tmp_bsub = OUTPUTS_DIR / f"eval_{eval_job_tag}_step{step}.bsub"
+    tmp_bsub = EVAL_GENERATED_DIR / f"eval_{eval_job_tag}_step{step}.bsub"
+    EVAL_GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     tmp_bsub.write_text(script)
 
     if dry_run:
@@ -264,7 +266,8 @@ def submit_gepa_eval_job(
     script = script.replace("%PROMPT_PATH%", str(prompt_path))
     script = script.replace("%ADDR_FILE%", addr_file)
 
-    tmp_bsub = OUTPUTS_DIR / f"eval_{eval_job_tag}_m{metric_calls}.bsub"
+    tmp_bsub = EVAL_GENERATED_DIR / f"eval_{eval_job_tag}_m{metric_calls}.bsub"
+    EVAL_GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     tmp_bsub.write_text(script)
 
     if dry_run:

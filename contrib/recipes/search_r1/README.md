@@ -8,16 +8,22 @@ The example is designed to run on a single node with 8 GPUs, each having at leas
 
 ## Included Files
 
-| File/Directory | Description |
-|----------------|-------------|
-| `data_process.sh` | Prepares the Wikipedia corpus, datasets, and `retriever` conda environment |
-| `retrieval_launch.sh` | Launches the retrieval service backed by the processed corpus |
-| `retrieval_server.py` | FastAPI server that powers document retrieval during training |
-| `search_r1_agent.py` | Agent-Lightning rollout script implementing the Search-R1 workflow |
-| `train_search_r1_agent.py` | RL training script that coordinates GRPO optimization |
-| `qa_em.py` | Exact-match evaluation utilities for validating model predictions |
-| `search_r1_gepa/` | GEPA prompt-optimization baseline (frozen Qwen2.5-3B, same HotpotQA split) |
-| `train_gepa.bsub` | LSF job script to run the GEPA baseline |
+| Path | Description |
+|------|-------------|
+| `scripts/` | Python entrypoints: `train_search_r1_agent.py`, `eval_search_r1_agent.py`, `eval_gepa_prompt.py`, `monitor_best_and_eval.py`, `search_r1_agent.py`, `qa_em.py`, `retrieval_server.py`, `wandb_run.py` |
+| `train/` | LSF bsub scripts for GRPO and GEPA training (`train_qwen3b*.bsub`, `train_gepa.bsub`) |
+| `serve/` | LSF bsub scripts for per-variant BM25 retrieval servers (`serve_retrieval_*.bsub`) |
+| `eval/` | Eval bsub templates (`eval_checkpoint.bsub`, `eval_gepa_prompt.bsub`); `eval/generated/` holds monitor-generated one-off eval jobs |
+| `outputs/` | LSF logs (`.out`/`.err`), BM25 addr files, GEPA run state, monitor state |
+| `checkpoints/` | VERL checkpoint roots per experiment variant |
+| `search_r1_gepa/` | GEPA prompt-optimization baseline (frozen Qwen2.5-3B) |
+| `data/` | Wikipedia corpus and train/test parquet (from `data_process.sh`) |
+| `data_process.sh` | Prepares corpus, datasets, and `retriever` conda environment |
+| `retrieval_launch.sh` | Local retrieval service for interactive dev (not LSF) |
+
+### Layout migration (2026-06)
+
+Job scripts moved from the recipe root into `train/`, `serve/`, and `eval/`; Python entrypoints into `scripts/`. **Already-running LSF jobs are unaffected** (they use absolute paths baked in at submit time). After pulling, resubmit with the new paths, e.g. `bsub < serve/serve_retrieval_baseline.bsub` then `bsub < train/train_qwen3b.bsub`. Run the monitor from the recipe root: `python scripts/monitor_best_and_eval.py`.
 
 ---
 
@@ -27,15 +33,15 @@ To compare **Genetic-Pareto prompt evolution** (GEPA) against GRPO weight update
 
 - **Task model:** `Qwen/Qwen2.5-3B-Instruct` (frozen weights; only the instruction prompt evolves)
 - **Data:** `hotpotqa` filter on `data/train.parquet` / `data/test_dev.parquet` (same as `qwen7b` / `qwen3_8b` GRPO configs)
-- **Retrieval:** dedicated BM25 server from `serve_retrieval_gepa.bsub` (`bm25_server_addr_gepa.txt`)
+- **Retrieval:** dedicated BM25 server from `serve/serve_retrieval_gepa.bsub` (`outputs/bm25_server_addr_gepa.txt`)
 - **Metric:** exact match via `qa_em.py`
 - **WandB:** project `AgentLightning`, run `searchr1_qwen25_3b_gepa`
 
-1. Start the GEPA-dedicated BM25 retrieval server (`bsub < serve_retrieval_gepa.bsub`).
+1. Start the GEPA-dedicated BM25 retrieval server (`bsub < serve/serve_retrieval_gepa.bsub`).
 2. Submit the GEPA job:
 
 ```bash
-bsub < train_gepa.bsub
+bsub < train/train_gepa.bsub
 ```
 
 Optional env vars: `GEPA_MAX_METRIC_CALLS` (default 1500), `GEPA_REFLECTION_LM` (default: same local vLLM endpoint).
@@ -46,14 +52,14 @@ Each training or eval job must use its **own** BM25 retrieval server. Do not sha
 
 | Variant | LSF job name | Serve script | Addr file | Train script | Eval |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| baseline (`qwen7b`) | `serve_bm25_qwen25_3b_baseline` | `serve_retrieval_baseline.bsub` | `bm25_server_addr_baseline.txt` | `train_qwen3b.bsub` | `eval_checkpoint.bsub` (via `monitor_best_and_eval.py`) |
-| baseline_a (`qwen3_8b`) | `serve_bm25_qwen25_3b_baseline_a` | `serve_retrieval_baseline_a.bsub` | `bm25_server_addr_baseline_a.txt` | `train_qwen3b_a.bsub` | same |
-| rewrite | `serve_bm25_qwen25_3b_rewrite` | `serve_retrieval_rewrite.bsub` | `bm25_server_addr_rewrite.txt` | `train_qwen3b_rewrite.bsub` | same |
-| rewrite_em | `serve_bm25_qwen25_3b_rewrite_em` | `serve_retrieval_rewrite_em.bsub` | `bm25_server_addr_rewrite_em.txt` | `train_qwen3b_rewrite_em.bsub` | same |
-| shaped | `serve_bm25_qwen25_3b_shaped` | `serve_retrieval_shaped.bsub` | `bm25_server_addr_shaped.txt` | `train_qwen3b_shaped.bsub` | same |
-| gepa | `serve_bm25_qwen25_3b_gepa` | `serve_retrieval_gepa.bsub` | `bm25_server_addr_gepa.txt` | `train_gepa.bsub` | `eval_gepa_prompt.bsub` |
+| baseline (`qwen7b`) | `serve_bm25_qwen25_3b_baseline` | `serve/serve_retrieval_baseline.bsub` | `outputs/bm25_server_addr_baseline.txt` | `train/train_qwen3b.bsub` | `eval/eval_checkpoint.bsub` (via `scripts/monitor_best_and_eval.py`) |
+| baseline_a (`qwen3_8b`) | `serve_bm25_qwen25_3b_baseline_a` | `serve/serve_retrieval_baseline_a.bsub` | `outputs/bm25_server_addr_baseline_a.txt` | `train/train_qwen3b_a.bsub` | same |
+| rewrite | `serve_bm25_qwen25_3b_rewrite` | `serve/serve_retrieval_rewrite.bsub` | `outputs/bm25_server_addr_rewrite.txt` | `train/train_qwen3b_rewrite.bsub` | same |
+| rewrite_em | `serve_bm25_qwen25_3b_rewrite_em` | `serve/serve_retrieval_rewrite_em.bsub` | `outputs/bm25_server_addr_rewrite_em.txt` | `train/train_qwen3b_rewrite_em.bsub` | same |
+| shaped | `serve_bm25_qwen25_3b_shaped` | `serve/serve_retrieval_shaped.bsub` | `outputs/bm25_server_addr_shaped.txt` | `train/train_qwen3b_shaped.bsub` | same |
+| gepa | `serve_bm25_qwen25_3b_gepa` | `serve/serve_retrieval_gepa.bsub` | `outputs/bm25_server_addr_gepa.txt` | `train/train_gepa.bsub` | `eval/eval_gepa_prompt.bsub` |
 
-Submit the matching `serve_retrieval_<variant>.bsub` job **before** train or full-test eval for that variant. Train and eval for the **same** variant share the same addr file; eval jobs poll until it appears. Do not reuse legacy paths such as `bm25_server_addr.txt` or `bm25_server_addr_qwen3.txt`. `monitor_best_and_eval.py` fills `%ADDR_FILE%` from the table above when it generates eval bsub scripts.
+Submit the matching `serve/serve_retrieval_<variant>.bsub` job **before** train or full-test eval for that variant. Train and eval for the **same** variant share the same addr file; eval jobs poll until it appears. Do not reuse legacy paths such as `bm25_server_addr.txt` or `bm25_server_addr_qwen3.txt`. `scripts/monitor_best_and_eval.py` fills `%ADDR_FILE%` from the table above when it generates eval bsub scripts under `eval/generated/`.
 
 ---
 
@@ -107,7 +113,7 @@ The retrieval server implementation is based on `search_r1/search/retrieval_serv
    In another terminal, run:
 
    ```bash
-   python train_search_r1_agent.py llama
+   python scripts/train_search_r1_agent.py llama
    ```
 
    This script starts the RL training. Each agent follows the Search-R1 workflow, retrieving information from the database and generating answers accordingly.
@@ -130,7 +136,7 @@ The `qwen7b` configuration targets `Qwen/Qwen2.5-3B-Instruct` and is optimised f
 2. **Start the Training Server**
 
    ```bash
-   python train_search_r1_agent.py qwen7b
+   python scripts/train_search_r1_agent.py qwen7b
    ```
 
 ---

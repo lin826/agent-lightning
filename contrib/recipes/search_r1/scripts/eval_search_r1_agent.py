@@ -39,7 +39,7 @@ from wandb_run import (
     setup_wandb_resume,
 )
 
-_RECIPE_DIR = Path(__file__).resolve().parent
+_RECIPE_DIR = Path(__file__).resolve().parent.parent
 _GRPO_TRAIN_WANDB_DIR = (
     Path("/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.claude/worktrees")
     / "feature+searchr1-qwen25-repro-qwen3-eval/contrib/recipes/search_r1/wandb"
