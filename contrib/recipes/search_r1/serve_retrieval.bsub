@@ -21,7 +21,7 @@ RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/searc
 ADDR_FILE=${RECIPE}/outputs/bm25_server_addr.txt
 
 export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
-export HF_HOME=/u/zwhong/.cache/huggingface
+export HF_HOME=/proj/inf-scaling/zwhong/.cache/huggingface
 export TRITON_CACHE_DIR=${PPLRL}/tmp/triton
 export XDG_CACHE_HOME=${PPLRL}/tmp/xdg
 

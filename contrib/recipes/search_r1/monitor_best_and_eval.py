@@ -32,30 +32,35 @@ CHECKPOINT_ROOT = "/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/r
 EXPERIMENTS = {
     "qwen7b": {
         "job_prefix": "train_qwen7b",
+        "eval_job_tag": "qwen25_3b_baseline",
         "config": "qwen7b",
         "addr_file": "bm25_server_addr.txt",
         "ckpt_dir": f"{CHECKPOINT_ROOT}/searchr1_qwen7b",
     },
     "qwen3_8b": {
         "job_prefix": "train_qwen3_8b",
+        "eval_job_tag": "qwen25_3b_baseline_a",
         "config": "qwen3_8b",
         "addr_file": "bm25_server_addr_qwen3.txt",
         "ckpt_dir": f"{CHECKPOINT_ROOT}/searchr1_qwen3_8b",
     },
     "qwen3_8b_rewrite": {
         "job_prefix": "train_qwen3_8b_rewrite",
+        "eval_job_tag": "qwen25_3b_rewrite",
         "config": "qwen3_8b_rewrite",
         "addr_file": "bm25_server_addr_rewrite.txt",
         "ckpt_dir": f"{CHECKPOINT_ROOT}/searchr1_qwen3_8b_rewrite",
     },
     "qwen3_8b_rewrite_em": {
         "job_prefix": "train_qwen3_8b_rewrite_em",
+        "eval_job_tag": "qwen25_3b_rewrite_em",
         "config": "qwen3_8b_rewrite_em",
         "addr_file": "bm25_server_addr_rewrite.txt",
         "ckpt_dir": f"{CHECKPOINT_ROOT}/searchr1_qwen3_8b_rewrite_em",
     },
     "qwen3_8b_shaped": {
         "job_prefix": "train_qwen3_8b_shaped",
+        "eval_job_tag": "qwen25_3b_shaped",
         "config": "qwen3_8b_shaped",
         "addr_file": "bm25_server_addr_qwen3.txt",
         "ckpt_dir": f"{CHECKPOINT_ROOT}/searchr1_qwen3_8b_shaped",
@@ -131,15 +136,23 @@ def find_checkpoint(ckpt_dir: str, step: int) -> Optional[str]:
     return None
 
 
-def submit_eval_job(config: str, checkpoint_path: str, step: int, addr_file: str, dry_run: bool = False) -> Optional[str]:
+def submit_eval_job(
+    config: str,
+    eval_job_tag: str,
+    checkpoint_path: str,
+    step: int,
+    addr_file: str,
+    dry_run: bool = False,
+) -> Optional[str]:
     """Generate and submit a bsub eval job. Returns job ID or None."""
     template = EVAL_TEMPLATE.read_text()
-    script = template.replace("%CONF%", config)
+    script = template.replace("%EVAL_TAG%", eval_job_tag)
+    script = script.replace("%CONF%", config)
     script = script.replace("%STEP%", str(step))
     script = script.replace("%CKPT_PATH%", checkpoint_path)
     script = script.replace("%ADDR_FILE%", addr_file)
 
-    tmp_bsub = OUTPUTS_DIR / f"eval_{config}_step{step}.bsub"
+    tmp_bsub = OUTPUTS_DIR / f"eval_{eval_job_tag}_step{step}.bsub"
     tmp_bsub.write_text(script)
 
     if dry_run:
@@ -202,7 +215,9 @@ def monitor_loop(poll_interval: int, dry_run: bool) -> None:
 
                     ckpt_path = find_checkpoint(exp["ckpt_dir"], step)
                     if ckpt_path:
-                        job_id = submit_eval_job(exp["config"], ckpt_path, step, exp["addr_file"], dry_run)
+                        job_id = submit_eval_job(
+                            exp["config"], exp["eval_job_tag"], ckpt_path, step, exp["addr_file"], dry_run
+                        )
                         if job_id or dry_run:
                             state.eval_submitted_steps.append(step)
                     else:

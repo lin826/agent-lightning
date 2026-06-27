@@ -1,5 +1,5 @@
 #!/bin/bash
-#BSUB -J serve_bm25_qwen3
+#BSUB -J serve_bm25_qwen25_3b_baseline_a
 #BSUB -G grp_runtime
 #BSUB -q normal
 #BSUB -n 56
@@ -8,9 +8,9 @@
 #BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_qwen3.%J.out
 #BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_qwen3.%J.err
 
-# Dedicated BM25 retrieval server for the Qwen3-8B training run.
-# Writes to a qwen3-specific addr file so it does not conflict with the
-# Qwen2.5-7B server started by serve_retrieval.bsub.
+# Dedicated BM25 retrieval server for Qwen2.5-3B baseline_a and shaped variants.
+# Writes to a variant-specific addr file so it does not conflict with the
+# baseline server started by serve_retrieval.bsub.
 
 set -euo pipefail
 
@@ -21,7 +21,7 @@ RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/searc
 ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_qwen3.txt
 
 export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
-export HF_HOME=/u/zwhong/.cache/huggingface
+export HF_HOME=/proj/inf-scaling/zwhong/.cache/huggingface
 export TRITON_CACHE_DIR=${PPLRL}/tmp/triton
 export XDG_CACHE_HOME=${PPLRL}/tmp/xdg
 
