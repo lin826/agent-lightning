@@ -191,9 +191,15 @@ def load_gepa_state_best(run_dir: Path) -> Optional[tuple[float, int, int, dict[
         return None
 
 
-def save_gepa_prompt(run_dir: Path, metric_calls: int, program_idx: int, prompt: dict[str, str]) -> Path:
+def save_gepa_prompt(
+    run_dir: Path, metric_calls: int, program_idx: int, prompt: dict[str, str]
+) -> Optional[Path]:
     """Persist monitored best prompt snapshot for eval submission."""
-    from search_r1_gepa.search_r1_gepa_adapter import INSTRUCTION_COMPONENT
+    try:
+        from search_r1_gepa.search_r1_gepa_adapter import INSTRUCTION_COMPONENT
+    except (ImportError, ModuleNotFoundError) as exc:
+        print(f"  WARNING: GEPA deps unavailable, cannot save prompt: {exc}", flush=True)
+        return None
 
     prompt_dir = run_dir / "monitored_prompts"
     prompt_dir.mkdir(parents=True, exist_ok=True)
@@ -358,15 +364,18 @@ def monitor_gepa(states: Dict[str, ExperimentState], dry_run: bool) -> bool:
                         print(f"  (eval already submitted for metric_calls={eval_key}, skipping)")
                     else:
                         prompt_path = save_gepa_prompt(run_dir, metric_calls, program_idx, prompt)
-                        job_id = submit_gepa_eval_job(
-                            GEPA_EXPERIMENT["eval_job_tag"],
-                            metric_calls,
-                            prompt_path,
-                            GEPA_EXPERIMENT["addr_file"],
-                            dry_run,
-                        )
-                        if job_id or dry_run:
-                            state.eval_submitted_steps.append(eval_key)
+                        if prompt_path is None:
+                            print("  (GEPA eval skipped — optional deps missing)", flush=True)
+                        else:
+                            job_id = submit_gepa_eval_job(
+                                GEPA_EXPERIMENT["eval_job_tag"],
+                                metric_calls,
+                                prompt_path,
+                                GEPA_EXPERIMENT["addr_file"],
+                                dry_run,
+                            )
+                            if job_id or dry_run:
+                                state.eval_submitted_steps.append(eval_key)
 
     # Fallback: seed val from stderr before gepa_state.bin exists.
     err_log = find_latest_err_log(OUTPUTS_DIR, GEPA_EXPERIMENT["job_prefix"])
@@ -397,8 +406,10 @@ def monitor_gepa(states: Dict[str, ExperimentState], dry_run: bool) -> bool:
                 try:
                     from search_r1_gepa.search_r1_gepa_adapter import default_seed_candidate
 
-                    prompt_path = save_gepa_prompt(run_dir, 0, 0, default_seed_candidate())
-                except ImportError as exc:
+                    saved = save_gepa_prompt(run_dir, 0, 0, default_seed_candidate())
+                    if saved is not None:
+                        prompt_path = saved
+                except (ImportError, ModuleNotFoundError) as exc:
                     print(f"  WARNING: GEPA deps unavailable, skipping seed eval: {exc}", flush=True)
                     continue
             if prompt_path.exists():
