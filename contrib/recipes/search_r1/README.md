@@ -16,6 +16,29 @@ The example is designed to run on a single node with 8 GPUs, each having at leas
 | `search_r1_agent.py` | Agent-Lightning rollout script implementing the Search-R1 workflow |
 | `train_search_r1_agent.py` | RL training script that coordinates GRPO optimization |
 | `qa_em.py` | Exact-match evaluation utilities for validating model predictions |
+| `search_r1_gepa/` | GEPA prompt-optimization baseline (frozen Qwen2.5-3B, same HotpotQA split) |
+| `train_gepa.bsub` | LSF job script to run the GEPA baseline |
+
+---
+
+## GEPA Baseline (prompt optimization vs GRPO)
+
+To compare **Genetic-Pareto prompt evolution** (GEPA) against GRPO weight updates on the same Search-R1 task:
+
+- **Task model:** `Qwen/Qwen2.5-3B-Instruct` (frozen weights; only the instruction prompt evolves)
+- **Data:** `hotpotqa` filter on `data/train.parquet` / `data/test_dev.parquet` (same as `qwen7b` / `qwen3_8b` GRPO configs)
+- **Retrieval:** BM25 server from `serve_retrieval.bsub`
+- **Metric:** exact match via `qa_em.py`
+- **WandB:** project `AgentLightning`, run `searchr1_qwen25_3b_gepa`
+
+1. Ensure the BM25 retrieval server is running (`serve_retrieval.bsub`).
+2. Submit the GEPA job:
+
+```bash
+bsub < train_gepa.bsub
+```
+
+Optional env vars: `GEPA_MAX_METRIC_CALLS` (default 1500), `GEPA_REFLECTION_LM` (default: same local vLLM endpoint).
 
 ---
 
