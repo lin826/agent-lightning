@@ -1,4 +1,6 @@
-# Core VERL integration touched by Search-R1 training/eval work.
+# Search-R1 contrib recipe (companion: contrib/CODEOWNERS, paths relative to contrib/ there).
+/contrib/recipes/search_r1/ @SiyunZhao @JiahangXu @lin826
 
+# Core VERL integration (Search-R1 training/eval work).
 /agentlightning/verl/ @lin826
 /tests/verl/ @lin826
