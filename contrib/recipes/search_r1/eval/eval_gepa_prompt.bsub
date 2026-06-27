@@ -87,10 +87,10 @@ export OPENAI_API_KEY=${OPENAI_API_KEY:-token-abc123}
 export GEPA_ROLLOUT_CONCURRENCY=${GEPA_ROLLOUT_CONCURRENCY}
 
 GEPA_RUN_DIR=${RECIPE}/outputs/gepa_qwen25_3b
-if [ -f "${GEPA_RUN_DIR}/wandb_run_id.txt" ]; then
-  export WANDB_RUN_ID=$(tr -d '[:space:]' < "${GEPA_RUN_DIR}/wandb_run_id.txt")
+if [ -f "${GEPA_RUN_DIR}/wandb_eval_run_id.txt" ]; then
+  export WANDB_RUN_ID=$(tr -d '[:space:]' < "${GEPA_RUN_DIR}/wandb_eval_run_id.txt")
   export WANDB_RESUME=allow
-  echo "Resuming WandB run ${WANDB_RUN_ID} from ${GEPA_RUN_DIR}/wandb_run_id.txt"
+  echo "Resuming WandB eval run ${WANDB_RUN_ID} from ${GEPA_RUN_DIR}/wandb_eval_run_id.txt"
 fi
 
 echo "Evaluating prompt ${PROMPT_PATH} on full test.parquet (metric_calls=%METRIC_CALLS%, rollout_concurrency=${GEPA_ROLLOUT_CONCURRENCY}) ..."

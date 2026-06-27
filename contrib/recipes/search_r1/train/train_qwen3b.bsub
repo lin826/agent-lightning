@@ -47,6 +47,7 @@ echo "Resuming from ${VERL_RESUME_FROM_PATH}, WandB run ${WANDB_RUN_ID}"
 echo "Waiting for retrieval server at ${ADDR_FILE} ..."
 until [ -f "${ADDR_FILE}" ]; do sleep 5; done
 export RETRIEVAL_SERVER_URL=$(cat "${ADDR_FILE}")
+export RETRIEVAL_SERVER_ADDR_FILE="${ADDR_FILE}"
 echo "Retrieval server ready: ${RETRIEVAL_SERVER_URL}"
 
 RAY=${PPLRL}/.venv/bin/ray

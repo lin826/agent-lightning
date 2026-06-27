@@ -1,0 +1,43 @@
+#!/bin/bash
+#BSUB -J serve_bm25_eval_qwen25_3b_baseline_a
+#BSUB -G grp_runtime
+#BSUB -q normal
+#BSUB -n 64
+#BSUB -R "span[hosts=1] rusage[mem=512GB]"
+#BSUB -gpu "num=8:mode=shared:j_exclusive=yes:gmodel=NVIDIAH10080GBHBM3"
+#BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_eval_baseline_a.%J.out
+#BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_eval_baseline_a.%J.err
+
+# Dedicated BM25 retrieval server for baseline_a full-test eval (eval/eval_checkpoint.bsub).
+# Pair with eval jobs for qwen3_8b only — do not share with training or other variants.
+
+set -euo pipefail
+
+PPLRL=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl
+PYTHON=${PPLRL}/.venv/bin/python
+WIKI=/proj/inf-scaling/zwhong/projs/asmi/code/dsl-agent/dspy_tutorial/wiki2017
+RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1
+ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_eval_baseline_a.txt
+
+export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
+# Caches on /proj (not /u/zwhong home -- avoids home-dir quota).
+CACHE_ROOT=/proj/inf-scaling/zwhong/.cache
+export HF_HOME="${CACHE_ROOT}/huggingface"
+export TRITON_CACHE_DIR="${CACHE_ROOT}/triton"
+export XDG_CACHE_HOME="${CACHE_ROOT}/xdg"
+
+mkdir -p "${TRITON_CACHE_DIR}" "${XDG_CACHE_HOME}" "${RECIPE}/outputs"
+rm -f "${ADDR_FILE}"
+
+cd "${PPLRL}"
+
+${PYTHON} scripts/torch_bm25_server.py \
+    --wiki-dir "${WIKI}" --bm25-device cuda --addr-file "${ADDR_FILE}" &
+SRV_PID=$!
+
+${PYTHON} scripts/gpu_keepalive.py &
+KEEP_PID=$!
+
+trap "kill ${KEEP_PID} 2>/dev/null; rm -f ${ADDR_FILE}" EXIT
+
+wait ${SRV_PID}

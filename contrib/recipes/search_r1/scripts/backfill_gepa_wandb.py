@@ -5,7 +5,7 @@ Appends ``val/reward``, ``val/em``, ``seed/val_em``, and optional per-iteration
 rewind or delete existing WandB steps.
 
 Usage:
-    python scripts/backfill_gepa_wandb.py --run-id youriju4
+    python scripts/backfill_gepa_wandb.py --run-id <wandb_run_id>
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Backfill GRPO-style metrics onto a GEPA WandB run")
-    parser.add_argument("--run-id", required=True, help="Existing WandB run id (e.g. youriju4)")
+    parser.add_argument("--run-id", required=True, help="Existing WandB run id")
     parser.add_argument(
         "--run-dir",
         type=Path,

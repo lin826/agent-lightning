@@ -1,0 +1,29 @@
+#!/bin/bash
+#BSUB -J monitor_retrieval_servers
+#BSUB -G grp_runtime
+#BSUB -q normal
+#BSUB -n 1
+#BSUB -R "rusage[mem=4GB]"
+#BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/monitor_retrieval_servers.%J.out
+#BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/monitor_retrieval_servers.%J.err
+
+# Long-running retrieval-server watchdog. Expects serve jobs for variants with active
+# training; resubmits serve/*.bsub after unexpected exits (5 min cooldown per variant).
+#
+# Submit:  bsub < serve/monitor_retrieval_servers.bsub
+# One-shot status (login node):  python scripts/monitor_retrieval_servers.py
+
+set -euo pipefail
+
+RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1
+PYTHON=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl/.venv/bin/python
+
+export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
+
+cd "${RECIPE}"
+exec "${PYTHON}" scripts/monitor_retrieval_servers.py \
+    --watch \
+    --poll-interval 60 \
+    --expect-train \
+    --resubmit \
+    --resubmit-cooldown 300

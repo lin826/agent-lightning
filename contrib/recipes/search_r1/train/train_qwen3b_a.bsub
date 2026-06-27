@@ -35,6 +35,7 @@ export PYTHONPATH=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning:${RECIPE}/
 echo "Waiting for retrieval server at ${ADDR_FILE} ..."
 until [ -f "${ADDR_FILE}" ]; do sleep 5; done
 export RETRIEVAL_SERVER_URL=$(cat "${ADDR_FILE}")
+export RETRIEVAL_SERVER_ADDR_FILE="${ADDR_FILE}"
 echo "Retrieval server ready: ${RETRIEVAL_SERVER_URL}"
 
 ${RAY} stop -v --force --grace-period 60 || true

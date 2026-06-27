@@ -261,7 +261,10 @@ class AgentLightningTrainer(RayPPOTrainer):
             default_dir = self.config.trainer.get("default_local_dir")
             if not default_dir:
                 return
-            path = Path(default_dir) / "wandb_run_id.txt"
+            run_id_filename = (
+                "wandb_eval_run_id.txt" if self.config.trainer.get("val_only", False) else "wandb_run_id.txt"
+            )
+            path = Path(default_dir) / run_id_filename
             path.parent.mkdir(parents=True, exist_ok=True)
             run_id = wandb.run.id
             if path.exists() and path.read_text().strip() == run_id:

@@ -36,11 +36,7 @@ source "${RECIPE}/.env"
 set +a
 
 GEPA_RUN_DIR=${RECIPE}/outputs/gepa_qwen25_3b
-if [ -f "${GEPA_RUN_DIR}/wandb_run_id.txt" ]; then
-  export WANDB_RUN_ID=$(tr -d '[:space:]' < "${GEPA_RUN_DIR}/wandb_run_id.txt")
-  export WANDB_RESUME=allow
-  echo "Resuming WandB run ${WANDB_RUN_ID} (entity=${WANDB_ENTITY:-default}) from ${GEPA_RUN_DIR}/wandb_run_id.txt"
-fi
+# WandB resume is validated in train_gepa.py (stale/deleted run ids are dropped automatically).
 
 export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
 # Caches on /proj (not /u/zwhong home -- avoids home-dir quota).

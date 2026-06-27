@@ -4,8 +4,8 @@ Usage:
     python eval_gepa_prompt.py <prompt_file> [--metric-calls N]
 
 Requires OPENAI_API_BASE (vLLM) and RETRIEVAL_SERVER_URL (BM25). Logs test/em and
-test/reward to the original searchr1_qwen25_3b_gepa WandB run (resume via
-WANDB_RUN_ID or outputs/gepa_qwen25_3b/wandb_run_id.txt).
+test/reward to a dedicated eval WandB run (resume via WANDB_RUN_ID or
+``{run_dir}/wandb_eval_run_id.txt``).
 
 Environment:
     GEPA_ROLLOUT_CONCURRENCY — parallel Search-R1 rollouts (default: 1; eval_gepa_prompt.bsub sets 8)
@@ -42,7 +42,11 @@ from search_r1_gepa.train_gepa import (  # noqa: E402
     evaluate_split,
     resolve_rollout_concurrency,
 )
-from wandb_run import resolve_wandb_run_id  # noqa: E402
+from wandb_run import (  # noqa: E402
+    resolve_wandb_eval_run_id,
+    save_wandb_eval_run_id,
+    validate_wandb_run_id,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -78,7 +82,7 @@ def main() -> None:
         "--run-dir",
         type=Path,
         default=_RECIPE_DIR / "outputs" / "gepa_qwen25_3b",
-        help="GEPA run directory containing wandb_run_id.txt",
+        help="GEPA run directory containing wandb_eval_run_id.txt",
     )
     parser.add_argument("--batch-size", type=int, default=20)
     parser.add_argument(
@@ -87,7 +91,7 @@ def main() -> None:
         default=None,
         help="Parallel Search-R1 rollouts per batch (default: GEPA_ROLLOUT_CONCURRENCY or 1)",
     )
-    parser.add_argument("--wandb-run-id", default=None, help="Override WandB run id (default: auto-resolve)")
+    parser.add_argument("--wandb-run-id", default=None, help="Override eval WandB run id (default: auto-resolve)")
     args = parser.parse_args()
 
     api_base = os.environ.get("OPENAI_API_BASE", "")
@@ -125,10 +129,12 @@ def main() -> None:
     try:
         import wandb
 
-        run_id = args.wandb_run_id or resolve_wandb_run_id(
-            run_dir=args.run_dir,
-            experiment_name=WANDB_EXPERIMENT,
-            wandb_dir=_RECIPE_DIR / "wandb",
+        run_id = args.wandb_run_id or resolve_wandb_eval_run_id(run_dir=args.run_dir)
+        run_id = validate_wandb_run_id(
+            run_id,
+            project=WANDB_PROJECT,
+            directory=args.run_dir,
+            kind="eval",
         )
         wandb_init_kwargs: dict[str, object] = {
             "project": WANDB_PROJECT,
@@ -139,11 +145,12 @@ def main() -> None:
             wandb_init_kwargs["entity"] = os.environ["WANDB_ENTITY"]
         if run_id:
             wandb_init_kwargs["id"] = run_id
-            wandb_init_kwargs["resume"] = "must"
-            logger.info("Resuming WandB run %s for full-test eval at metric_calls=%d", run_id, args.metric_calls)
+            wandb_init_kwargs["resume"] = "allow"
+            logger.info("Resuming WandB eval run %s for full-test eval at metric_calls=%d", run_id, args.metric_calls)
         else:
-            logger.warning("WandB run id not found; full-test eval may create a separate run")
+            logger.info("No eval WandB run id found; creating a new eval run")
         wandb.init(**wandb_init_kwargs)
+        assert wandb.run is not None
         wandb.log(
             {
                 "test/em": test_em,
@@ -152,6 +159,7 @@ def main() -> None:
             },
             step=args.metric_calls,
         )
+        save_wandb_eval_run_id(args.run_dir, wandb.run.id)
         wandb.finish()
     except ImportError:
         logger.warning("wandb not installed; skipping WandB logging")

@@ -46,10 +46,19 @@ from search_r1_gepa.search_r1_gepa_adapter import (  # noqa: E402
     make_openai_llm_call,
 )
 from search_r1_agent import INSTRUCTION_FORMAT  # noqa: E402
+from gepa_full_eval import (  # noqa: E402
+    DEFAULT_ADDR_FILE,
+    DEFAULT_EVAL_JOB_TAG,
+    install_gepa_full_eval_trigger,
+    maybe_trigger_full_eval,
+    start_training_session,
+)
 from wandb_run import (  # noqa: E402
     build_gepa_wandb_init_kwargs,
     install_gepa_wandb_grpo_compat_patch,
     log_gepa_wandb_metrics,
+    resolve_wandb_run_id,
+    validate_wandb_run_id,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -154,6 +163,20 @@ def main() -> None:
     train_data, val_data = load_dataset(args.data_dir, train_subset=train_subset)
     args.run_dir.mkdir(parents=True, exist_ok=True)
 
+    wandb_dir = _RECIPE_DIR / "wandb"
+    saved_run_id = resolve_wandb_run_id(run_dir=args.run_dir)
+    fresh_session = os.environ.get("GEPA_FRESH_SESSION", "").lower() in {"1", "true", "yes"}
+    if saved_run_id:
+        validated_run_id = validate_wandb_run_id(
+            saved_run_id,
+            project=WANDB_PROJECT,
+            directory=args.run_dir,
+            kind="train",
+        )
+        if validated_run_id is None:
+            fresh_session = True
+    start_training_session(args.run_dir, fresh=fresh_session)
+
     rollout_concurrency = resolve_rollout_concurrency(args.rollout_concurrency)
     logger.info("Rollout concurrency=%d", rollout_concurrency)
 
@@ -176,7 +199,7 @@ def main() -> None:
         name=WANDB_EXPERIMENT,
         config=wandb_config,
         run_dir=args.run_dir,
-        wandb_dir=_RECIPE_DIR / "wandb",
+        wandb_dir=wandb_dir,
     )
 
     logger.info("Evaluating seed prompt on val (n=%d)...", len(val_data))
@@ -185,6 +208,18 @@ def main() -> None:
     logger.info("Seed val/em=%.4f", seed_val_em)
 
     install_gepa_wandb_grpo_compat_patch(reflection_minibatch_size=REFLECTION_MINIBATCH_SIZE)
+    install_gepa_full_eval_trigger(
+        run_dir=args.run_dir,
+        eval_job_tag=DEFAULT_EVAL_JOB_TAG,
+        addr_file=DEFAULT_ADDR_FILE,
+    )
+    maybe_trigger_full_eval(
+        run_dir=args.run_dir,
+        dev_score=seed_val_em,
+        metric_calls=0,
+        program_idx=0,
+        prompt=seed_candidate,
+    )
     log_gepa_wandb_metrics(
         {
             "seed/val_em": seed_val_em,
@@ -220,6 +255,13 @@ def main() -> None:
 
     best_candidate = result.best_candidate
     best_val_em = evaluate_split(val_adapter, best_candidate, val_data)
+    maybe_trigger_full_eval(
+        run_dir=args.run_dir,
+        dev_score=best_val_em,
+        metric_calls=result.total_metric_calls,
+        program_idx=-1,
+        prompt=best_candidate,
+    )
     train_adapter = SearchR1GEPAAdapter(
         llm_call, eval_mode="train", rollout_concurrency=rollout_concurrency
     )
