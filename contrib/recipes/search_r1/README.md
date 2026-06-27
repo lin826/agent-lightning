@@ -44,16 +44,16 @@ Optional env vars: `GEPA_MAX_METRIC_CALLS` (default 1500), `GEPA_REFLECTION_LM` 
 
 Each training or eval job must use its **own** BM25 retrieval server. Do not share `serve_retrieval_*.bsub` or `bm25_server_addr_*.txt` across variants.
 
-| Variant | LSF job name | Serve script | Addr file | Train script |
-| :--- | :--- | :--- | :--- | :--- |
-| baseline (`qwen7b`) | `serve_bm25_qwen25_3b_baseline` | `serve_retrieval_baseline.bsub` | `bm25_server_addr_baseline.txt` | `train_qwen3b.bsub` |
-| baseline_a (`qwen3_8b`) | `serve_bm25_qwen25_3b_baseline_a` | `serve_retrieval_baseline_a.bsub` | `bm25_server_addr_baseline_a.txt` | `train_qwen3b_a.bsub` |
-| rewrite | `serve_bm25_qwen25_3b_rewrite` | `serve_retrieval_rewrite.bsub` | `bm25_server_addr_rewrite.txt` | `train_qwen3b_rewrite.bsub` |
-| rewrite_em | `serve_bm25_qwen25_3b_rewrite_em` | `serve_retrieval_rewrite_em.bsub` | `bm25_server_addr_rewrite_em.txt` | `train_qwen3b_rewrite_em.bsub` |
-| shaped | `serve_bm25_qwen25_3b_shaped` | `serve_retrieval_shaped.bsub` | `bm25_server_addr_shaped.txt` | `train_qwen3b_shaped.bsub` |
-| gepa | `serve_bm25_qwen25_3b_gepa` | `serve_retrieval_gepa.bsub` | `bm25_server_addr_gepa.txt` | `train_gepa.bsub` |
+| Variant | LSF job name | Serve script | Addr file | Train script | Eval |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| baseline (`qwen7b`) | `serve_bm25_qwen25_3b_baseline` | `serve_retrieval_baseline.bsub` | `bm25_server_addr_baseline.txt` | `train_qwen3b.bsub` | `eval_checkpoint.bsub` (via `monitor_best_and_eval.py`) |
+| baseline_a (`qwen3_8b`) | `serve_bm25_qwen25_3b_baseline_a` | `serve_retrieval_baseline_a.bsub` | `bm25_server_addr_baseline_a.txt` | `train_qwen3b_a.bsub` | same |
+| rewrite | `serve_bm25_qwen25_3b_rewrite` | `serve_retrieval_rewrite.bsub` | `bm25_server_addr_rewrite.txt` | `train_qwen3b_rewrite.bsub` | same |
+| rewrite_em | `serve_bm25_qwen25_3b_rewrite_em` | `serve_retrieval_rewrite_em.bsub` | `bm25_server_addr_rewrite_em.txt` | `train_qwen3b_rewrite_em.bsub` | same |
+| shaped | `serve_bm25_qwen25_3b_shaped` | `serve_retrieval_shaped.bsub` | `bm25_server_addr_shaped.txt` | `train_qwen3b_shaped.bsub` | same |
+| gepa | `serve_bm25_qwen25_3b_gepa` | `serve_retrieval_gepa.bsub` | `bm25_server_addr_gepa.txt` | `train_gepa.bsub` | `eval_gepa_prompt.bsub` |
 
-Submit the serve job first, then the matching train job (train scripts poll until the addr file appears).
+Submit the matching `serve_retrieval_<variant>.bsub` job **before** train or full-test eval for that variant. Train and eval for the **same** variant share the same addr file; eval jobs poll until it appears. Do not reuse legacy paths such as `bm25_server_addr.txt` or `bm25_server_addr_qwen3.txt`. `monitor_best_and_eval.py` fills `%ADDR_FILE%` from the table above when it generates eval bsub scripts.
 
 ---
 
