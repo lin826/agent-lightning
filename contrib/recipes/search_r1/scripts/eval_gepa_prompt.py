@@ -8,7 +8,7 @@ test/reward to the original searchr1_qwen25_3b_gepa WandB run (resume via
 WANDB_RUN_ID or outputs/gepa_qwen25_3b/wandb_run_id.txt).
 
 Environment:
-    GEPA_ROLLOUT_CONCURRENCY — parallel Search-R1 rollouts (default: 1; eval_gepa_prompt.bsub sets 2)
+    GEPA_ROLLOUT_CONCURRENCY — parallel Search-R1 rollouts (default: 1; eval_gepa_prompt.bsub sets 8)
 """
 
 from __future__ import annotations

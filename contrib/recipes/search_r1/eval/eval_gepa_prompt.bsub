@@ -2,9 +2,9 @@
 #BSUB -J eval_searchr1_%EVAL_TAG%_m%METRIC_CALLS%
 #BSUB -G grp_runtime
 #BSUB -q normal
-#BSUB -n 16
-#BSUB -R "span[hosts=1] rusage[mem=64GB]"
-#BSUB -gpu "num=2:mode=shared:j_exclusive=yes:gmodel=NVIDIAH10080GBHBM3"
+#BSUB -n 72
+#BSUB -R "span[hosts=1] rusage[mem=128GB]"
+#BSUB -gpu "num=8:mode=shared:j_exclusive=yes:gmodel=NVIDIAH10080GBHBM3"
 #BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/eval_%EVAL_TAG%_m%METRIC_CALLS%.%J.out
 #BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/eval_%EVAL_TAG%_m%METRIC_CALLS%.%J.err
 
@@ -21,9 +21,9 @@ ADDR_FILE=${RECIPE}/outputs/%ADDR_FILE%
 PROMPT_PATH=%PROMPT_PATH%
 VLLM_PORT=8101
 VLLM_ADDR_FILE=${RECIPE}/outputs/vllm_gepa_eval_addr.txt
-# Eval job reserves 2 GPUs; replicate Qwen2.5-3B with tp=1 dp=2.
-VLLM_DATA_PARALLEL_SIZE=${VLLM_DATA_PARALLEL_SIZE:-2}
-GEPA_ROLLOUT_CONCURRENCY=${GEPA_ROLLOUT_CONCURRENCY:-2}
+# Eval job reserves 8 GPUs; replicate Qwen2.5-3B with tp=1 dp=8 (matches train_gepa.bsub).
+VLLM_DATA_PARALLEL_SIZE=${VLLM_DATA_PARALLEL_SIZE:-8}
+GEPA_ROLLOUT_CONCURRENCY=${GEPA_ROLLOUT_CONCURRENCY:-8}
 
 set -a
 # shellcheck source=/dev/null
