@@ -14,6 +14,61 @@ def checkpoint_root_from_actor(actor_path: Path) -> Path:
     return actor_path.resolve().parent.parent
 
 
+def resolve_actor_checkpoint(checkpoint_path: Path | str) -> tuple[Path, Path]:
+    """Resolve and validate a VERL actor checkpoint path.
+
+    Accepts either ``.../global_step_N/actor`` or ``.../global_step_N``.
+
+    Returns:
+        ``(actor_dir, global_step_dir)`` where ``actor_dir`` holds FSDP shards and
+        ``global_step_dir`` is the path VERL expects for ``resume_from_path``.
+    """
+    path = Path(checkpoint_path).expanduser()
+    if not path.is_absolute():
+        path = path.resolve()
+    else:
+        path = path.resolve()
+
+    if not path.exists():
+        raise FileNotFoundError(f"Checkpoint path does not exist: {path}")
+
+    if path.name == "actor" and path.parent.name.startswith("global_step_"):
+        actor_dir = path
+        global_step_dir = path.parent
+    elif path.name.startswith("global_step_") and (path / "actor").is_dir():
+        global_step_dir = path
+        actor_dir = path / "actor"
+    else:
+        raise ValueError(
+            "Expected a VERL checkpoint directory "
+            "(.../global_step_N/actor or .../global_step_N), "
+            f"got: {path}"
+        )
+
+    hf_dir = actor_dir / "huggingface"
+    if not hf_dir.is_dir():
+        raise FileNotFoundError(
+            f"Missing HuggingFace tokenizer export at {hf_dir}. "
+            "Ensure the checkpoint was saved by VERL with tokenizer artifacts."
+        )
+
+    if not any(actor_dir.glob("model_world_size_*_rank_*.pt")):
+        raise FileNotFoundError(f"No FSDP model shards found under {actor_dir}")
+
+    return actor_dir, global_step_dir
+
+
+def resolve_tokenizer_path(actor_dir: Path) -> Path:
+    """Return the HuggingFace export directory for tokenizer loading."""
+    hf_dir = (actor_dir / "huggingface").resolve()
+    if not hf_dir.is_dir():
+        raise FileNotFoundError(
+            f"Missing HuggingFace tokenizer export at {hf_dir}. "
+            "Ensure the checkpoint was saved by VERL with tokenizer artifacts."
+        )
+    return hf_dir
+
+
 def save_wandb_run_id(directory: Path, run_id: str) -> Path:
     """Write ``wandb_run_id.txt`` under ``directory`` and return the file path."""
     directory = directory.resolve()

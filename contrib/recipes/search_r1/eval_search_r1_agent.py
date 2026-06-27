@@ -31,7 +31,13 @@ from train_search_r1_agent import (
     config_train_qwen3_8b_shaped,
     config_train_qwen7b,
 )
-from wandb_run import checkpoint_root_from_actor, find_wandb_run_id_from_local, resolve_wandb_run_id, setup_wandb_resume
+from wandb_run import (
+    checkpoint_root_from_actor,
+    find_wandb_run_id_from_local,
+    resolve_actor_checkpoint,
+    resolve_wandb_run_id,
+    setup_wandb_resume,
+)
 
 _RECIPE_DIR = Path(__file__).resolve().parent
 _GRPO_TRAIN_WANDB_DIR = (
@@ -43,7 +49,12 @@ _GRPO_TRAIN_WANDB_DIR = (
 def make_eval_config(base_config: Dict[str, Any], checkpoint_path: str, step: int) -> Dict[str, Any]:
     """Modify a training config into an eval-only config pointing at a checkpoint."""
     config = deepcopy(base_config)
-    config["actor_rollout_ref"]["model"]["path"] = checkpoint_path
+    _actor_dir, global_step_dir = resolve_actor_checkpoint(checkpoint_path)
+    # Keep model.path as the base HF model for tokenizer init. VERL entrypoint calls
+    # hf_tokenizer(model.path); FSDP actor dirs only store shards under actor/, with
+    # tokenizer files in actor/huggingface/. Load trained weights via resume instead.
+    config["trainer"]["resume_mode"] = "resume_path"
+    config["trainer"]["resume_from_path"] = str(global_step_dir)
     config["data"]["val_files"] = "data/test.parquet"
     config["data_source_filter"] = "hotpotqa"
     config["trainer"]["val_only"] = True
@@ -74,7 +85,11 @@ def main() -> None:
     }
 
     base_config = config_functions[args.config]()
-    checkpoint_path = Path(args.checkpoint_path)
+    try:
+        actor_dir, _global_step_dir = resolve_actor_checkpoint(args.checkpoint_path)
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(f"Invalid checkpoint path: {exc}") from exc
+    checkpoint_path = actor_dir
     checkpoint_root = checkpoint_root_from_actor(checkpoint_path)
     run_id = args.wandb_run_id or resolve_wandb_run_id(
         checkpoint_dir=checkpoint_root,
