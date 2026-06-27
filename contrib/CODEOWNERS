@@ -1,4 +1,4 @@
 # Put code owner definitions here.
 
-# Recipes
-recipes/search_r1 @SiyunZhao @JiahangXu
+# Recipes (paths relative to contrib/)
+recipes/search_r1/ @SiyunZhao @JiahangXu @lin826
