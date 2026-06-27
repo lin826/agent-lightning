@@ -46,7 +46,11 @@ from search_r1_gepa.search_r1_gepa_adapter import (  # noqa: E402
     make_openai_llm_call,
 )
 from search_r1_agent import INSTRUCTION_FORMAT  # noqa: E402
-from wandb_run import save_wandb_run_id  # noqa: E402
+from wandb_run import (  # noqa: E402
+    build_gepa_wandb_init_kwargs,
+    install_gepa_wandb_grpo_compat_patch,
+    log_gepa_wandb_metrics,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -59,6 +63,7 @@ TRAIN_FILE = "data/train.parquet"
 VAL_FILE = "data/test_dev.parquet"
 DEFAULT_MAX_METRIC_CALLS = 1500
 DEFAULT_ROLLOUT_CONCURRENCY = 1
+REFLECTION_MINIBATCH_SIZE = 3
 
 
 def resolve_rollout_concurrency(cli_value: int | None) -> int:
@@ -156,27 +161,44 @@ def main() -> None:
     adapter = SearchR1GEPAAdapter(llm_call, eval_mode="train", rollout_concurrency=rollout_concurrency)
 
     seed_candidate = default_seed_candidate()
-    wandb_init_kwargs: dict[str, Any] = {
-        "project": WANDB_PROJECT,
-        "name": WANDB_EXPERIMENT,
-        "config": {
-            "baseline": "gepa",
-            "model": MODEL_NAME,
-            "data_source": DATA_SOURCE,
-            "train_file": TRAIN_FILE,
-            "val_file": VAL_FILE,
-            "max_metric_calls": max_metric_calls,
-            "rollout_concurrency": rollout_concurrency,
-            "seed_instruction": INSTRUCTION_FORMAT[:200],
-        },
+    wandb_config: dict[str, Any] = {
+        "baseline": "gepa",
+        "model": MODEL_NAME,
+        "data_source": DATA_SOURCE,
+        "train_file": TRAIN_FILE,
+        "val_file": VAL_FILE,
+        "max_metric_calls": max_metric_calls,
+        "rollout_concurrency": rollout_concurrency,
+        "seed_instruction": INSTRUCTION_FORMAT[:200],
     }
-    if os.environ.get("WANDB_ENTITY"):
-        wandb_init_kwargs["entity"] = os.environ["WANDB_ENTITY"]
+    wandb_init_kwargs = build_gepa_wandb_init_kwargs(
+        project=WANDB_PROJECT,
+        name=WANDB_EXPERIMENT,
+        config=wandb_config,
+        run_dir=args.run_dir,
+        wandb_dir=_RECIPE_DIR / "wandb",
+    )
 
     logger.info("Evaluating seed prompt on val (n=%d)...", len(val_data))
     val_adapter = SearchR1GEPAAdapter(llm_call, eval_mode="val", rollout_concurrency=rollout_concurrency)
     seed_val_em = evaluate_split(val_adapter, seed_candidate, val_data)
     logger.info("Seed val/em=%.4f", seed_val_em)
+
+    install_gepa_wandb_grpo_compat_patch(reflection_minibatch_size=REFLECTION_MINIBATCH_SIZE)
+    log_gepa_wandb_metrics(
+        {
+            "seed/val_em": seed_val_em,
+            "val/em": seed_val_em,
+            "val/reward": seed_val_em,
+        },
+        step=0,
+        project=WANDB_PROJECT,
+        experiment_name=WANDB_EXPERIMENT,
+        run_dir=args.run_dir,
+        config=wandb_config,
+        wandb_dir=_RECIPE_DIR / "wandb",
+        finish=True,
+    )
 
     result = gepa.optimize(
         seed_candidate=seed_candidate,
@@ -185,7 +207,7 @@ def main() -> None:
         adapter=adapter,
         reflection_lm=reflection_lm,
         candidate_selection_strategy="pareto",
-        reflection_minibatch_size=3,
+        reflection_minibatch_size=REFLECTION_MINIBATCH_SIZE,
         max_metric_calls=max_metric_calls,
         use_merge=False,
         use_wandb=True,
@@ -217,20 +239,24 @@ def main() -> None:
     prompt_path = args.run_dir / "best_instruction_prompt.txt"
     prompt_path.write_text(best_candidate[INSTRUCTION_COMPONENT])
 
-    try:
-        import wandb
-
-        if wandb.run is not None:
-            save_wandb_run_id(args.run_dir, wandb.run.id)
-            wandb.log(
-                {
-                    "val/em": best_val_em,
-                    "train/em": best_train_em,
-                    "seed/val_em": seed_val_em,
-                }
-            )
-    except ImportError:
-        pass
+    final_step = max(result.total_metric_calls, 1)
+    log_gepa_wandb_metrics(
+        {
+            "val/em": best_val_em,
+            "val/reward": best_val_em,
+            "train/em": best_train_em,
+            "training/reward": best_train_em,
+            "training/em": best_train_em,
+            "seed/val_em": seed_val_em,
+        },
+        step=final_step,
+        project=WANDB_PROJECT,
+        experiment_name=WANDB_EXPERIMENT,
+        run_dir=args.run_dir,
+        config=wandb_config,
+        wandb_dir=_RECIPE_DIR / "wandb",
+        finish=True,
+    )
 
     logger.info("GEPA complete. best val/em=%.4f train/em(sample500)=%.4f", best_val_em, best_train_em)
     logger.info("Best prompt saved to %s", prompt_path)
