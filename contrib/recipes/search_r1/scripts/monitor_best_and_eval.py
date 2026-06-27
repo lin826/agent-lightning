@@ -30,43 +30,42 @@ GEPA_EVAL_TEMPLATE = RECIPE_DIR / "eval" / "eval_gepa_prompt.bsub"
 # Absolute checkpoint root — must match CHECKPOINT_ROOT in train_search_r1_agent.py.
 CHECKPOINT_ROOT = "/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/checkpoints"
 
-# GRPO worktree outputs (training jobs run from feature worktree).
+# GRPO training log directory (train_qwen25_3b_* from train/*.bsub).
 DEFAULT_GRPO_OUTPUTS_DIR = (
-    "/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.claude/worktrees/"
-    "feature+searchr1-qwen25-repro-qwen3-eval/contrib/recipes/search_r1/outputs"
+    "/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs"
 )
 
 EXPERIMENTS = {
     "qwen7b": {
-        "job_prefix": "train_qwen7b",
+        "job_prefix": "train_qwen25_3b_baseline",
         "eval_job_tag": "qwen25_3b_baseline",
         "config": "qwen7b",
         "addr_file": "bm25_server_addr_baseline.txt",
         "ckpt_dir": f"{CHECKPOINT_ROOT}/searchr1_qwen7b",
     },
     "qwen3_8b": {
-        "job_prefix": "train_qwen3_8b",
+        "job_prefix": "train_qwen25_3b_baseline_a",
         "eval_job_tag": "qwen25_3b_baseline_a",
         "config": "qwen3_8b",
         "addr_file": "bm25_server_addr_baseline_a.txt",
         "ckpt_dir": f"{CHECKPOINT_ROOT}/searchr1_qwen3_8b",
     },
     "qwen3_8b_rewrite": {
-        "job_prefix": "train_qwen3_8b_rewrite",
+        "job_prefix": "train_qwen25_3b_rewrite",
         "eval_job_tag": "qwen25_3b_rewrite",
         "config": "qwen3_8b_rewrite",
         "addr_file": "bm25_server_addr_rewrite.txt",
         "ckpt_dir": f"{CHECKPOINT_ROOT}/searchr1_qwen3_8b_rewrite",
     },
     "qwen3_8b_rewrite_em": {
-        "job_prefix": "train_qwen3_8b_rewrite_em",
+        "job_prefix": "train_qwen25_3b_rewrite_em",
         "eval_job_tag": "qwen25_3b_rewrite_em",
         "config": "qwen3_8b_rewrite_em",
         "addr_file": "bm25_server_addr_rewrite_em.txt",
         "ckpt_dir": f"{CHECKPOINT_ROOT}/searchr1_qwen3_8b_rewrite_em",
     },
     "qwen3_8b_shaped": {
-        "job_prefix": "train_qwen3_8b_shaped",
+        "job_prefix": "train_qwen25_3b_shaped",
         "eval_job_tag": "qwen25_3b_shaped",
         "config": "qwen3_8b_shaped",
         "addr_file": "bm25_server_addr_shaped.txt",
