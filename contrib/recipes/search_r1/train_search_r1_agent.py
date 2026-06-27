@@ -82,6 +82,8 @@ RL_TRAINING_CONFIG: Dict[str, Any] = {
         "nnodes": 1,
         "test_freq": 1,
         "save_freq": 10,
+        # Persist checkpoints when val/reward improves, even between save_freq steps.
+        "save_on_best_val": True,
         "total_epochs": 15,
         "total_training_steps": 300,
         "default_local_dir": "checkpoints/searchr1_checkpoints/",

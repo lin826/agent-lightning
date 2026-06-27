@@ -4,12 +4,13 @@
 
 from __future__ import annotations
 
+import json
 import random
 from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
 from pprint import pprint
-from typing import Dict, Tuple, Type
+from typing import Dict, Optional, Tuple, Type
 
 import numpy as np
 import torch
@@ -196,6 +197,26 @@ class AgentLightningTrainer(RayPPOTrainer):
             (key.replace("val/", f"{prefix}/", 1) if key.startswith("val/") else key): value
             for key, value in metrics.items()
         }
+
+    def _get_val_reward(self, val_metrics: Dict[str, object]) -> Optional[float]:
+        """Return the scalar validation reward used for best-checkpoint tracking."""
+        metric_key = self.config.trainer.get("save_on_best_val_metric", "val/reward")
+        if metric_key in val_metrics:
+            return float(val_metrics[metric_key])
+        prefix = self.config.trainer.get("val_metric_prefix")
+        if prefix and prefix != "val" and metric_key.startswith("val/"):
+            alt_key = metric_key.replace("val/", f"{prefix}/", 1)
+            if alt_key in val_metrics:
+                return float(val_metrics[alt_key])
+        return None
+
+    def _write_best_val_meta(self, score: float) -> None:
+        default_dir = self.config.trainer.get("default_local_dir")
+        if not default_dir:
+            return
+        path = Path(default_dir) / "best_val_meta.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"step": self.global_steps, "score": score}) + "\n")
 
     def _save_wandb_run_id(self) -> None:
         try:
@@ -530,6 +551,7 @@ class AgentLightningTrainer(RayPPOTrainer):
         # we start from step 1
         self.global_steps += 1
         last_val_metrics = None
+        best_val_reward: Optional[float] = None
 
         for epoch in range(self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:
@@ -541,20 +563,38 @@ class AgentLightningTrainer(RayPPOTrainer):
                 metrics = self._train_step(batch_dict)
 
                 # validate
+                val_metrics: Optional[dict] = None
                 if (
                     self.val_reward_fn is not None
                     and self.config.trainer.test_freq > 0
                     and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0)
                 ):
                     with _timer("validate", timing_raw):
-                        val_metrics: dict = self._validate()
+                        val_metrics = self._validate()
                         if is_last_step:
                             last_val_metrics = val_metrics
                     metrics.update(val_metrics)
 
-                if self.config.trainer.save_freq > 0 and (
+                save_on_best_val = self.config.trainer.get("save_on_best_val", False)
+                should_save_periodic = self.config.trainer.save_freq > 0 and (
                     is_last_step or self.global_steps % self.config.trainer.save_freq == 0
-                ):
+                )
+                should_save_best = False
+                if save_on_best_val and val_metrics is not None:
+                    val_reward = self._get_val_reward(val_metrics)
+                    if val_reward is not None and (
+                        best_val_reward is None or val_reward > best_val_reward
+                    ):
+                        best_val_reward = val_reward
+                        self._write_best_val_meta(val_reward)
+                        if not should_save_periodic:
+                            should_save_best = True
+                            print(
+                                f"New best {self.config.trainer.get('save_on_best_val_metric', 'val/reward')}"
+                                f"={val_reward:.4f} at step {self.global_steps}, saving checkpoint"
+                            )
+
+                if should_save_periodic or should_save_best:
                     with _timer("save_checkpoint", timing_raw):
                         self._save_checkpoint()
 

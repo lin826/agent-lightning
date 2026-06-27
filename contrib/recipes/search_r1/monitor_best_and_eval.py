@@ -207,7 +207,8 @@ def save_gepa_prompt(run_dir: Path, metric_calls: int, program_idx: int, prompt:
 
 def find_checkpoint(ckpt_dir: str, step: int) -> Optional[str]:
     """Find the actor checkpoint for a given step."""
-    ckpt_path = Path(ckpt_dir) / f"global_step_{step}" / "actor"
+    ckpt_root = Path(ckpt_dir)
+    ckpt_path = ckpt_root / f"global_step_{step}" / "actor"
     if ckpt_path.exists():
         return str(ckpt_path)
     ckpt_path_alt = OUTPUTS_DIR / ckpt_dir / f"global_step_{step}" / "actor"
@@ -391,9 +392,13 @@ def monitor_gepa(states: Dict[str, ExperimentState], dry_run: bool) -> bool:
                 continue
             prompt_path = run_dir / "best_instruction_prompt.txt"
             if metric_calls == 0:
-                from search_r1_gepa.search_r1_gepa_adapter import default_seed_candidate
+                try:
+                    from search_r1_gepa.search_r1_gepa_adapter import default_seed_candidate
 
-                prompt_path = save_gepa_prompt(run_dir, 0, 0, default_seed_candidate())
+                    prompt_path = save_gepa_prompt(run_dir, 0, 0, default_seed_candidate())
+                except ImportError as exc:
+                    print(f"  WARNING: GEPA deps unavailable, skipping seed eval: {exc}", flush=True)
+                    continue
             if prompt_path.exists():
                 job_id = submit_gepa_eval_job(
                     GEPA_EXPERIMENT["eval_job_tag"],
