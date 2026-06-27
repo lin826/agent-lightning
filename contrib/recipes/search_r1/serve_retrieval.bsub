@@ -21,9 +21,11 @@ RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/searc
 ADDR_FILE=${RECIPE}/outputs/bm25_server_addr.txt
 
 export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
-export HF_HOME=/proj/inf-scaling/zwhong/.cache/huggingface
-export TRITON_CACHE_DIR=${PPLRL}/tmp/triton
-export XDG_CACHE_HOME=${PPLRL}/tmp/xdg
+# Caches on /proj (not /u/zwhong home -- avoids home-dir quota).
+CACHE_ROOT=/proj/inf-scaling/zwhong/.cache
+export HF_HOME="${CACHE_ROOT}/huggingface"
+export TRITON_CACHE_DIR="${CACHE_ROOT}/triton"
+export XDG_CACHE_HOME="${CACHE_ROOT}/xdg"
 
 mkdir -p "${TRITON_CACHE_DIR}" "${XDG_CACHE_HOME}" "${RECIPE}/outputs"
 

@@ -26,9 +26,11 @@ source "${RECIPE}/.env"
 set +a
 
 export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
-export HF_HOME=/proj/inf-scaling/zwhong/.cache/huggingface
-export TRITON_CACHE_DIR=${RECIPE}/outputs/triton
-export XDG_CACHE_HOME=${RECIPE}/outputs/xdg
+# Caches on /proj (not /u/zwhong home -- avoids home-dir quota).
+CACHE_ROOT=/proj/inf-scaling/zwhong/.cache
+export HF_HOME="${CACHE_ROOT}/huggingface"
+export TRITON_CACHE_DIR="${CACHE_ROOT}/triton"
+export XDG_CACHE_HOME="${CACHE_ROOT}/xdg"
 export PYTHONPATH=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.claude/worktrees/feature+searchr1-qwen25-repro-qwen3-eval:${PYTHONPATH:-}
 
 # resume_mode defaults to "auto"; default_local_dir (searchr1_qwen7b) holds
