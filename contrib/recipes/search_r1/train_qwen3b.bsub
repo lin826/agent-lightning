@@ -1,7 +1,7 @@
 #!/bin/bash
 #BSUB -J train_searchr1_qwen25_3b_baseline
-#BSUB -G grp_runtime
-#BSUB -q normal
+#BSUB -G grp_preemptable
+#BSUB -q preemptable
 #BSUB -n 64
 #BSUB -R "span[hosts=1] rusage[mem=512GB]"
 #BSUB -gpu "num=8:mode=shared:j_exclusive=yes:gmodel=NVIDIAH10080GBHBM3"
@@ -16,7 +16,7 @@ set -euo pipefail
 
 PPLRL=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl
 PYTHON=${PPLRL}/.venv/bin/python
-RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.claude/worktrees/feature+searchr1-qwen25-repro-qwen3-eval/contrib/recipes/search_r1
+RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1
 ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_baseline.txt
 
 # Load WANDB_API_KEY and other secrets from .env
@@ -31,7 +31,14 @@ CACHE_ROOT=/proj/inf-scaling/zwhong/.cache
 export HF_HOME="${CACHE_ROOT}/huggingface"
 export TRITON_CACHE_DIR="${CACHE_ROOT}/triton"
 export XDG_CACHE_HOME="${CACHE_ROOT}/xdg"
-export PYTHONPATH=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.claude/worktrees/feature+searchr1-qwen25-repro-qwen3-eval:${PYTHONPATH:-}
+export PYTHONPATH=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning:${PYTHONPATH:-}
+
+CKPT_ROOT="/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/checkpoints/searchr1_qwen7b"
+STEP=$(tr -d '[:space:]' < "${CKPT_ROOT}/latest_checkpointed_iteration.txt")
+export VERL_RESUME_FROM_PATH="${CKPT_ROOT}/global_step_${STEP}"
+export WANDB_RUN_ID=$(tr -d '[:space:]' < "${CKPT_ROOT}/wandb_run_id.txt")
+export WANDB_RESUME=allow
+echo "Resuming from ${VERL_RESUME_FROM_PATH}, WandB run ${WANDB_RUN_ID}"
 
 # resume_mode defaults to "auto"; default_local_dir (searchr1_qwen7b) holds
 # global_step_10 + latest_checkpointed_iteration.txt, so VERL auto-resumes there.

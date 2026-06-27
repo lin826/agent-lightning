@@ -1,7 +1,7 @@
 #!/bin/bash
 #BSUB -J train_searchr1_qwen25_3b_rewrite_em
-#BSUB -G grp_runtime
-#BSUB -q normal
+#BSUB -G grp_preemptable
+#BSUB -q preemptable
 #BSUB -n 64
 #BSUB -R "span[hosts=1] rusage[mem=128GB]"
 #BSUB -gpu "num=8:mode=shared:j_exclusive=yes:gmodel=NVIDIAH10080GBHBM3"
@@ -16,7 +16,7 @@ set -euo pipefail
 PPLRL=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl
 PYTHON=${PPLRL}/.venv/bin/python
 RAY=${PPLRL}/.venv/bin/ray
-RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.claude/worktrees/feature+searchr1-qwen25-repro-qwen3-eval/contrib/recipes/search_r1
+RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1
 ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_rewrite_em.txt
 
 set -a
@@ -30,7 +30,14 @@ CACHE_ROOT=/proj/inf-scaling/zwhong/.cache
 export HF_HOME="${CACHE_ROOT}/huggingface"
 export TRITON_CACHE_DIR="${CACHE_ROOT}/triton"
 export XDG_CACHE_HOME="${CACHE_ROOT}/xdg"
-export PYTHONPATH=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.claude/worktrees/feature+searchr1-qwen25-repro-qwen3-eval:${PYTHONPATH:-}
+export PYTHONPATH=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning:${PYTHONPATH:-}
+
+CKPT_ROOT="/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/checkpoints/searchr1_qwen3_8b_rewrite_em"
+STEP=$(tr -d '[:space:]' < "${CKPT_ROOT}/latest_checkpointed_iteration.txt")
+export VERL_RESUME_FROM_PATH="${CKPT_ROOT}/global_step_${STEP}"
+export WANDB_RUN_ID=$(tr -d '[:space:]' < "${CKPT_ROOT}/wandb_run_id.txt")
+export WANDB_RESUME=allow
+echo "Resuming from ${VERL_RESUME_FROM_PATH}, WandB run ${WANDB_RUN_ID}"
 
 echo "Waiting for retrieval server at ${ADDR_FILE} ..."
 until [ -f "${ADDR_FILE}" ]; do sleep 5; done
