@@ -2,9 +2,9 @@
 #BSUB -J train_searchr1_gepa_qwen25_3b
 #BSUB -G grp_runtime
 #BSUB -q normal
-#BSUB -n 16
-#BSUB -R "span[hosts=1] rusage[mem=64GB]"
-#BSUB -gpu "num=2:mode=shared:j_exclusive=yes:gmodel=NVIDIAH10080GBHBM3"
+#BSUB -n 72
+#BSUB -R "span[hosts=1] rusage[mem=128GB]"
+#BSUB -gpu "num=8:mode=shared:j_exclusive=yes:gmodel=NVIDIAH10080GBHBM3"
 #BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_gepa_qwen25_3b.%J.out
 #BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_gepa_qwen25_3b.%J.err
 
