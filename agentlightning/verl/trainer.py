@@ -40,6 +40,7 @@ from agentlightning.adapter import TraceAdapter, TraceToTripletBase
 from agentlightning.llm_proxy import LLMProxy
 from agentlightning.store.base import LightningStore
 
+from .checkpoint_utils import strip_stale_optimizer_shards
 from .daemon import AgentModeDaemon
 
 __all__ = [
@@ -228,6 +229,28 @@ class AgentLightningTrainer(RayPPOTrainer):
         path = Path(default_dir) / "best_val_meta.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"step": self.global_steps, "score": score}) + "\n")
+
+    def _strip_stale_optimizer_after_save(self) -> None:
+        """Drop optimizer shards from older global_step_* dirs after a new save."""
+        if not self.config.trainer.get("strip_stale_optimizer", True):
+            return
+        default_dir = self.config.trainer.get("default_local_dir")
+        if not default_dir:
+            return
+        checkpoint_root = Path(default_dir)
+        if not checkpoint_root.is_absolute():
+            checkpoint_root = Path.cwd() / checkpoint_root
+        removed = strip_stale_optimizer_shards(checkpoint_root, keep_step=self.global_steps)
+        if removed:
+            total_bytes = sum(removed.values())
+            print(
+                f"Stripped optimizer shards from {len(removed)} stale checkpoint(s) "
+                f"({total_bytes / (1024**3):.2f} GiB freed); keeping global_step_{self.global_steps}"
+            )
+
+    def _save_checkpoint(self):
+        super()._save_checkpoint()
+        self._strip_stale_optimizer_after_save()
 
     def _save_wandb_run_id(self) -> None:
         try:

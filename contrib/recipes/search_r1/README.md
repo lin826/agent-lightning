@@ -10,7 +10,7 @@ The example is designed to run on a single node with 8 GPUs, each having at leas
 
 | Path | Description |
 |------|-------------|
-| `scripts/` | Python entrypoints: `train_search_r1_agent.py`, `eval_search_r1_agent.py`, `eval_gepa_prompt.py`, `monitor_best_and_eval.py`, `search_r1_agent.py`, `qa_em.py`, `retrieval_server.py`, `wandb_run.py` |
+| `scripts/` | Python entrypoints: `train_search_r1_agent.py`, `eval_search_r1_agent.py`, `eval_gepa_prompt.py`, `monitor_best_and_eval.py`, `strip_stale_checkpoint_optim.py`, `search_r1_agent.py`, `qa_em.py`, `retrieval_server.py`, `wandb_run.py` |
 | `train/` | LSF bsub scripts for GRPO and GEPA training (`train_qwen3b*.bsub`, `train_gepa.bsub`) |
 | `serve/` | LSF bsub scripts for per-variant BM25 retrieval servers (`serve_retrieval_*.bsub`) |
 | `eval/` | Eval bsub templates (`eval_checkpoint.bsub`, `eval_gepa_prompt.bsub`); `eval/generated/` holds monitor-generated one-off eval jobs |
@@ -60,6 +60,21 @@ Each training or eval job must use its **own** BM25 retrieval server. Do not sha
 | gepa | `serve_bm25_qwen25_3b_gepa` | `serve/serve_retrieval_gepa.bsub` | `outputs/bm25_server_addr_gepa.txt` | `train/train_gepa.bsub` | `eval/eval_gepa_prompt.bsub` |
 
 Submit the matching `serve/serve_retrieval_<variant>.bsub` job **before** train or full-test eval for that variant. Train and eval for the **same** variant share the same addr file; eval jobs poll until it appears. Do not reuse legacy paths such as `bm25_server_addr.txt` or `bm25_server_addr_qwen3.txt`. `scripts/monitor_best_and_eval.py` fills `%ADDR_FILE%` from the table above when it generates eval bsub scripts under `eval/generated/`.
+
+### Checkpoint optimizer retention
+
+VERL FSDP checkpoints store actor model shards (~14 GiB), optimizer shards (~23 GiB), and small `extra_state` / `data.pt` files per `global_step_N`. After each save, `AgentLightningTrainer` strips optimizer shards from **older** steps so only the latest checkpoint keeps optimizer state (~50% disk savings when many steps are retained).
+
+- **Training resume:** point `VERL_RESUME_FROM_PATH` at the **latest** `global_step_N` (the one named in `latest_checkpointed_iteration.txt`). That checkpoint retains optimizer + LR scheduler state for a true resume.
+- **Eval / export:** older checkpoints still have actor model weights (and HuggingFace tokenizer artifacts). Full-test eval uses `load_contents: ["model"]` only.
+- **One-time cleanup** of existing trees:
+
+```bash
+python scripts/strip_stale_checkpoint_optim.py checkpoints/searchr1_qwen7b --dry-run
+python scripts/strip_stale_checkpoint_optim.py checkpoints/searchr1_*
+```
+
+Set `trainer.strip_stale_optimizer: false` in the VERL config to disable automatic stripping during training.
 
 ---
 

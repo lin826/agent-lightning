@@ -55,6 +55,8 @@ def make_eval_config(base_config: Dict[str, Any], checkpoint_path: str, step: in
     # tokenizer files in actor/huggingface/. Load trained weights via resume instead.
     config["trainer"]["resume_mode"] = "resume_path"
     config["trainer"]["resume_from_path"] = str(global_step_dir)
+    # Eval only needs actor weights; stale checkpoints may omit optimizer shards.
+    config["actor_rollout_ref"]["actor"]["checkpoint"] = {"load_contents": ["model"]}
     config["data"]["val_files"] = "data/test.parquet"
     config["data_source_filter"] = "hotpotqa"
     config["trainer"]["val_only"] = True
