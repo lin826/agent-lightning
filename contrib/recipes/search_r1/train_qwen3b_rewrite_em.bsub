@@ -5,8 +5,8 @@
 #BSUB -n 64
 #BSUB -R "span[hosts=1] rusage[mem=128GB]"
 #BSUB -gpu "num=8:mode=shared:j_exclusive=yes:gmodel=NVIDIAH10080GBHBM3"
-#BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_qwen3_8b_rewrite_em.%J.out
-#BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_qwen3_8b_rewrite_em.%J.err
+#BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_qwen25_3b_rewrite_em.%J.out
+#BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_qwen25_3b_rewrite_em.%J.err
 
 # GRPO training for Search-R1 with Qwen2.5-3B-Instruct: question-rewrite + pure-EM reward.
 # Variant B (rewrite + pure-EM reward). Uses serve_retrieval_rewrite_em.bsub.

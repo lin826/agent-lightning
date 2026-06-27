@@ -5,8 +5,8 @@
 #BSUB -n 64
 #BSUB -R "span[hosts=1] rusage[mem=128GB]"
 #BSUB -gpu "num=8:mode=shared:j_exclusive=yes:gmodel=NVIDIAH10080GBHBM3"
-#BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_qwen3_8b.%J.out
-#BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_qwen3_8b.%J.err
+#BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_qwen25_3b_baseline_a.%J.out
+#BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_qwen25_3b_baseline_a.%J.err
 
 # GRPO training for Search-R1 with Qwen2.5-3B-Instruct.
 # Variant A (baseline). Uses dedicated retrieval server (serve_retrieval_baseline_a.bsub).
