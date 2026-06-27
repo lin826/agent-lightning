@@ -12,7 +12,7 @@ import requests
 from openai import OpenAI
 from qa_em import compute_score_em, compute_shaped_reward
 
-from agentlightning import LLM, LitAgent, NamedResources, Rollout, Trainer, configure_logger, setup_logging
+from agentlightning import LLM, LitAgent, NamedResources, Rollout, Trainer, configure_logger, emit_reward, setup_logging
 
 setup_logging()
 logger = configure_logger(name=__name__)
@@ -26,6 +26,11 @@ def eval(prediction: str, ground_truth: List[str]) -> float:
     reward_score = float(compute_score_em(prediction, ground_truth))
     print(f"pred: {prediction} | {type(ground_truth)} gold_answer: {ground_truth} | res: {reward_score}")
     return reward_score
+
+
+def _emit_rollout_scores(reward_score: float, em_score: float) -> None:
+    """Emit composite reward and pure EM for VERL optimization and WandB logging."""
+    emit_reward({"reward": reward_score, "em": em_score}, primary_key="reward")
 
 
 def postprocess_response(response: str) -> str:
@@ -189,8 +194,9 @@ class SearchR1Agent(LitAgent[Dict[str, Any]]):
             return None
 
         end_time_rollout = time.time()
-        reward_score = eval(rollout_content, answer_list)
-        logger.info("[Rollout %s] Reward: %s", rollout_id, reward_score)
+        em_score = eval(rollout_content, answer_list)
+        reward_score = em_score
+        logger.info("[Rollout %s] Reward: %s | EM: %s", rollout_id, reward_score, em_score)
         end_time_eval = time.time()
 
         logger.info("[Rollout %s] Time taken for rollout: %.2f seconds", rollout_id, end_time_rollout - start_time)
@@ -198,11 +204,12 @@ class SearchR1Agent(LitAgent[Dict[str, Any]]):
             "[Rollout %s] Time taken for evaluation: %.2f seconds", rollout_id, end_time_eval - end_time_rollout
         )
         logger.info(
-            "question: {} answer: {} ground_truth: {} reward: {}".format(
-                task["question"], rollout_content, answer_list, reward_score
+            "question: {} answer: {} ground_truth: {} reward: {} em: {}".format(
+                task["question"], rollout_content, answer_list, reward_score, em_score
             )
         )
-        return reward_score
+        _emit_rollout_scores(reward_score, em_score)
+        return None
 
 
 INSTRUCTION_FORMAT_REWRITE = """You will answer a question using search.
@@ -334,22 +341,26 @@ class SearchR1RewriteAgent(LitAgent[Dict[str, Any]]):
             return None
 
         end_time_rollout = time.time()
+        em_score = float(compute_score_em(rollout_content, answer_list))
 
         if rollout.mode == "train":
             reward_score = compute_shaped_reward(
                 rollout_content, answer_list, retrieved_passages, alpha=self.alpha, beta=self.beta
             )
         else:
-            reward_score = float(compute_score_em(rollout_content, answer_list))
+            reward_score = em_score
 
-        logger.info("[Rollout %s] Reward: %s (mode=%s)", rollout_id, reward_score, rollout.mode)
+        logger.info(
+            "[Rollout %s] Reward: %s | EM: %s (mode=%s)", rollout_id, reward_score, em_score, rollout.mode
+        )
         logger.info("[Rollout %s] Time taken for rollout: %.2f seconds", rollout_id, end_time_rollout - start_time)
         logger.info(
-            "question: {} answer: {} ground_truth: {} reward: {}".format(
-                task["question"], rollout_content, answer_list, reward_score
+            "question: {} answer: {} ground_truth: {} reward: {} em: {}".format(
+                task["question"], rollout_content, answer_list, reward_score, em_score
             )
         )
-        return reward_score
+        _emit_rollout_scores(reward_score, em_score)
+        return None
 
 
 def _retrieve_passages(query: str) -> List[str]:

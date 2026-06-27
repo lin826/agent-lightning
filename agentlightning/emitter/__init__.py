@@ -18,6 +18,7 @@ from .object import emit_object, get_object_value
 from .reward import (
     emit_reward,
     find_final_reward,
+    find_reward_dimension,
     find_reward_spans,
     get_reward_value,
     get_rewards_from_span,
@@ -34,6 +35,7 @@ __all__ = [
     "is_reward_span",
     "find_reward_spans",
     "find_final_reward",
+    "find_reward_dimension",
     "emit_message",
     "emit_object",
     "emit_exception",

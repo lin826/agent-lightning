@@ -38,6 +38,7 @@ __all__ = [
     "is_reward_span",
     "find_reward_spans",
     "find_final_reward",
+    "find_reward_dimension",
 ]
 
 
@@ -317,4 +318,21 @@ def find_final_reward(spans: Sequence[SpanLike]) -> Optional[float]:
         reward = get_reward_value(span)
         if reward is not None:
             return reward
+    return None
+
+
+def find_reward_dimension(spans: Sequence[SpanLike], dimension_name: str) -> Optional[float]:
+    """Return a named reward dimension from the latest reward span.
+
+    Args:
+        spans: Sequence containing span objects that may encode multi-dimensional rewards.
+        dimension_name: Name of the reward dimension to extract (for example ``"em"``).
+
+    Returns:
+        Value of the requested dimension, or `None` when it is not found.
+    """
+    for span in reversed(spans):
+        for reward in get_rewards_from_span(span):
+            if reward.name == dimension_name:
+                return reward.value
     return None

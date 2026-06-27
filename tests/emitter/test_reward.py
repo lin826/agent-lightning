@@ -171,6 +171,23 @@ def test_find_final_reward_returns_none_when_no_reward() -> None:
     assert find_final_reward(spans) is None
 
 
+def test_find_reward_dimension_returns_named_dimension() -> None:
+    from agentlightning.emitter.reward import find_reward_dimension
+    from agentlightning.semconv import LightningSpanAttributes
+
+    attributes = {
+        f"{LightningSpanAttributes.REWARD.value}.0.name": "reward",
+        f"{LightningSpanAttributes.REWARD.value}.0.value": 0.3,
+        f"{LightningSpanAttributes.REWARD.value}.1.name": "em",
+        f"{LightningSpanAttributes.REWARD.value}.1.value": 1.0,
+    }
+    span = make_span(name=AGL_ANNOTATION, attributes=attributes)
+
+    assert find_reward_dimension([span], "em") == 1.0
+    assert find_reward_dimension([span], "reward") == 0.3
+    assert find_reward_dimension([span], "missing") is None
+
+
 def test_emit_reward_scalar_converts_to_primary_dimension(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: Dict[str, Any] = {}
     sentinel_span = object()
