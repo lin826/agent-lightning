@@ -194,11 +194,40 @@ def test_install_gepa_wandb_grpo_compat_patch_prefers_per_step_val_over_pareto(m
     assert val_em_logs[-1]["val/best_single_program_em"] == pytest.approx(0.235)
 
 
-def test_log_gepa_wandb_metrics_logs_on_step_axis(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    logged: list[tuple[dict[str, float], int]] = []
+def test_ensure_gepa_wandb_rollouts_axis_defined_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    wandb_run._gepa_wandb_rollouts_axis_defined_run_ids.clear()
+    define_calls: list[tuple[str, ...]] = []
 
     fake_run = MagicMock()
-    fake_run.id = "gepa_run_step"
+    fake_run.id = "run_abc"
+
+    fake_wandb = MagicMock()
+    fake_wandb.run = fake_run
+
+    def fake_define_metric(name: str, **kwargs: object) -> None:
+        define_calls.append((name, *sorted(kwargs.items())))
+
+    fake_wandb.define_metric = fake_define_metric
+    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
+
+    wandb_run.ensure_gepa_wandb_rollouts_axis_defined()
+    wandb_run.ensure_gepa_wandb_rollouts_axis_defined()
+
+    expected = [("rollouts", ("summary", "max")), ("iteration", ("summary", "max"))]
+    expected.extend((metric, ("step_metric", "rollouts")) for metric in wandb_run.GEPA_ROLLOUT_AXIS_METRICS)
+    assert define_calls == expected
+    assert not any(name.endswith("@rollouts") for name, *_ in define_calls)
+
+    wandb_run._gepa_wandb_rollouts_axis_defined_run_ids.clear()
+
+
+def test_log_gepa_wandb_metrics_logs_on_rollouts_axis(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    wandb_run._gepa_wandb_rollouts_axis_defined_run_ids.clear()
+    logged: list[dict[str, float]] = []
+    define_calls: list[str] = []
+
+    fake_run = MagicMock()
+    fake_run.id = "gepa_run_rollouts"
 
     fake_wandb = MagicMock()
     fake_wandb.run = fake_run
@@ -206,39 +235,57 @@ def test_log_gepa_wandb_metrics_logs_on_step_axis(monkeypatch: pytest.MonkeyPatc
     def fake_init(**kwargs: object) -> None:
         fake_wandb.run = fake_run
 
-    def fake_log(metrics: dict[str, float], *, step: int) -> None:
-        logged.append((metrics, step))
+    def fake_log(metrics: dict[str, float], **kwargs: object) -> None:
+        logged.append(metrics)
+
+    def fake_define_metric(name: str, **kwargs: object) -> None:
+        define_calls.append(name)
 
     fake_wandb.init = fake_init
     fake_wandb.log = fake_log
+    fake_wandb.define_metric = fake_define_metric
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
 
     wandb_run.log_gepa_wandb_metrics(
         {"val/em": 0.5, "total_metric_calls": 120},
-        step=3,
+        rollouts=120,
+        iteration=3,
         project="AgentLightning",
         experiment_name="searchr1_gepa_test",
         run_dir=tmp_path,
     )
 
-    assert logged[0][0]["val/em"] == 0.5
-    assert logged[0][0]["total_metric_calls"] == 120
-    assert "rollouts" not in logged[0][0]
-    assert logged[0][1] == 3
+    assert "rollouts" in define_calls
+    assert "iteration" in define_calls
+    assert "val/em" in define_calls
+    assert not any(name.endswith("@rollouts") for name in define_calls)
+    assert logged[0]["rollouts"] == 120
+    assert logged[0]["iteration"] == 3
+    assert logged[0]["val/em"] == 0.5
+    assert "val/em@rollouts" not in logged[0]
+
+    wandb_run._gepa_wandb_rollouts_axis_defined_run_ids.clear()
 
 
 def test_install_gepa_wandb_grpo_compat_patch_logs_grpo_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("gepa")
     from gepa.logging.experiment_tracker import ExperimentTracker
 
+    wandb_run._gepa_wandb_rollouts_axis_defined_run_ids.clear()
     if hasattr(ExperimentTracker, "_agl_grpo_compat_patched"):
         delattr(ExperimentTracker, "_agl_grpo_compat_patched")
 
     logged: list[tuple[dict[str, Any], int | None]] = []
+    rollout_logs: list[dict[str, Any]] = []
 
     def fake_log_metrics(self: ExperimentTracker, metrics: dict[str, Any], step: int | None = None) -> None:
         logged.append((metrics, step))
 
+    fake_wandb = MagicMock()
+    fake_wandb.run = MagicMock(id="compat_run")
+    fake_wandb.define_metric = MagicMock()
+    fake_wandb.log = lambda payload, **kwargs: rollout_logs.append(payload)
+    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
     monkeypatch.setattr(ExperimentTracker, "log_metrics", fake_log_metrics)
     wandb_run.install_gepa_wandb_grpo_compat_patch(reflection_minibatch_size=3)
 
@@ -248,12 +295,17 @@ def test_install_gepa_wandb_grpo_compat_patch_logs_grpo_metrics(monkeypatch: pyt
         step=42,
     )
 
-    compat_payload = logged[1][0]
+    assert logged[0][0]["rollouts"] == 87
+    assert logged[0][0]["iteration"] == 42
+    compat_payload = rollout_logs[0]
     assert compat_payload["val/reward"] == pytest.approx(0.24)
     assert compat_payload["training/reward"] == pytest.approx(2.0 / 3.0)
+    assert compat_payload["rollouts"] == 87
+    assert compat_payload["iteration"] == 42
     assert compat_payload["total_metric_calls"] == 87
-    assert "rollouts" not in compat_payload
     assert "val/reward@rollouts" not in compat_payload
+
+    wandb_run._gepa_wandb_rollouts_axis_defined_run_ids.clear()
 
 
 def test_install_gepa_wandb_grpo_compat_patch_historical_best_does_not_clobber_per_step_val(

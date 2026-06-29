@@ -214,18 +214,20 @@ def main() -> None:
                 "test/em": test_em,
                 "test/reward": test_em,
                 "total_metric_calls": args.metric_calls,
+                "iteration": train_iteration,
             },
-            step=train_iteration,
+            rollouts=args.metric_calls,
+            iteration=train_iteration,
             project=WANDB_PROJECT,
             experiment_name=variant.wandb_experiment,
             run_dir=args.run_dir,
             finish=True,
         )
         logger.info(
-            "Logged test/em=%.4f to GEPA training WandB run at iteration=%d (metric_calls=%d)",
+            "Logged test/em=%.4f to GEPA training WandB run at rollouts=%d (iteration=%d)",
             test_em,
-            train_iteration,
             args.metric_calls,
+            train_iteration,
         )
 
 

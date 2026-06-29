@@ -28,6 +28,25 @@ GEPA_EVAL_WANDB_RUN_NAMES: dict[str, str] = {
     "rewrite": "eval_gepa_rewrite",
 }
 
+GEPA_ROLLOUT_STEP_METRIC = "rollouts"
+GEPA_ITERATION_STEP_METRIC = "iteration"
+
+# Chart metrics plotted against cumulative metric calls (``rollouts``), not GEPA iteration.
+GEPA_ROLLOUT_AXIS_METRICS: tuple[str, ...] = (
+    "val/reward",
+    "val/em",
+    "training/reward",
+    "training/em",
+    "val/pareto_front_agg",
+    "val/best_single_program_em",
+    "seed/val_em",
+    "test/reward",
+    "test/em",
+)
+
+_gepa_wandb_rollouts_axis_defined_run_ids: set[str] = set()
+
+
 def resolve_eval_wandb_run_name(config_key: str) -> str:
     """Return the WandB run name for a GRPO full-test eval variant.
 
@@ -356,6 +375,68 @@ def build_gepa_wandb_init_kwargs(
     return kwargs
 
 
+def ensure_gepa_wandb_rollouts_axis_defined() -> None:
+    """Register ``rollouts`` as the WandB x-axis for GEPA chart metrics (once per run)."""
+    try:
+        import wandb
+    except ImportError:
+        return
+
+    run = getattr(wandb, "run", None)
+    if run is None:
+        return
+
+    run_id = run.id
+    if run_id in _gepa_wandb_rollouts_axis_defined_run_ids:
+        return
+
+    wandb.define_metric(GEPA_ROLLOUT_STEP_METRIC, summary="max")
+    wandb.define_metric(GEPA_ITERATION_STEP_METRIC, summary="max")
+    for metric in GEPA_ROLLOUT_AXIS_METRICS:
+        wandb.define_metric(metric, step_metric=GEPA_ROLLOUT_STEP_METRIC)
+    _gepa_wandb_rollouts_axis_defined_run_ids.add(run_id)
+
+
+def stamp_gepa_rollout_fields(metrics: dict[str, Any], *, iteration: int | None = None) -> None:
+    """Stamp ``rollouts`` and ``iteration`` fields for rollout-budget WandB charts."""
+    if iteration is not None:
+        metrics[GEPA_ITERATION_STEP_METRIC] = int(iteration)
+    elif GEPA_ITERATION_STEP_METRIC not in metrics and "iteration" in metrics:
+        metrics[GEPA_ITERATION_STEP_METRIC] = int(metrics["iteration"])
+
+    if GEPA_ROLLOUT_STEP_METRIC in metrics:
+        return
+    if "total_metric_calls" in metrics:
+        metrics[GEPA_ROLLOUT_STEP_METRIC] = int(metrics["total_metric_calls"])
+    elif iteration == 0:
+        metrics[GEPA_ROLLOUT_STEP_METRIC] = 0
+
+
+def prepare_gepa_wandb_payload(metrics: dict[str, Any], *, iteration: int | None = None) -> dict[str, Any]:
+    """Return a WandB payload with ``rollouts`` / ``iteration`` fields for chart x-axis."""
+    payload = dict(metrics)
+    stamp_gepa_rollout_fields(payload, iteration=iteration)
+    return payload
+
+
+def resolve_gepa_rollouts(
+    metrics: dict[str, Any],
+    *,
+    rollouts: int | None = None,
+    iteration: int | None = None,
+) -> int:
+    """Resolve cumulative metric calls for the rollout-budget WandB x-axis."""
+    if rollouts is not None:
+        return int(rollouts)
+    if GEPA_ROLLOUT_STEP_METRIC in metrics:
+        return int(metrics[GEPA_ROLLOUT_STEP_METRIC])
+    if "total_metric_calls" in metrics:
+        return int(metrics["total_metric_calls"])
+    if iteration == 0:
+        return 0
+    raise ValueError("Cannot resolve rollouts: pass rollouts= or include total_metric_calls in metrics")
+
+
 def resolve_gepa_iteration_for_metric_calls(
     run_dir: Path,
     metric_calls: int,
@@ -363,11 +444,10 @@ def resolve_gepa_iteration_for_metric_calls(
     project: str = "AgentLightning",
     wandb_dir: Path | None = None,
 ) -> int:
-    """Map a rollout budget (``metric_calls``) to the GEPA iteration for WandB ``_step``.
+    """Map a rollout budget (``metric_calls``) to the GEPA iteration for reference logging.
 
-    Full-test eval logs ``test/reward`` on the training run at the iteration that
-    produced the prompt, not at ``metric_calls``, so ``_step`` stays aligned with
-    per-iteration training curves.
+    Full-test eval logs ``test/reward`` on the training run at ``rollouts=metric_calls``
+    while stamping ``iteration`` from this map when available.
     """
     if metric_calls <= 0:
         return 0
@@ -410,7 +490,7 @@ def resolve_gepa_iteration_for_metric_calls(
                 continue
 
     logger.warning(
-        "Could not map metric_calls=%d to a GEPA iteration in %s; using metric_calls as WandB step",
+        "Could not map metric_calls=%d to a GEPA iteration in %s; using metric_calls as iteration",
         metric_calls,
         run_dir,
     )
@@ -449,6 +529,10 @@ def install_gepa_wandb_grpo_compat_patch(
     )
 
     def log_metrics(self: ExperimentTracker, metrics: dict[str, Any], step: int | None = None) -> None:
+        if self.use_wandb and step is not None and "total_metric_calls" in metrics:
+            ensure_gepa_wandb_rollouts_axis_defined()
+            stamp_gepa_rollout_fields(metrics, iteration=step)
+
         original_log_metrics(self, metrics, step=step)
         if not self.use_wandb or step is None:
             return
@@ -485,7 +569,18 @@ def install_gepa_wandb_grpo_compat_patch(
         if extra:
             if "total_metric_calls" in metrics:
                 extra["total_metric_calls"] = int(metrics["total_metric_calls"])
-            original_log_metrics(self, extra, step=step)
+            if "total_metric_calls" in metrics or GEPA_ROLLOUT_STEP_METRIC in metrics:
+                ensure_gepa_wandb_rollouts_axis_defined()
+                payload = prepare_gepa_wandb_payload(extra, iteration=step)
+                try:
+                    import wandb
+
+                    if wandb.run is not None:
+                        wandb.log(payload)
+                except ImportError:
+                    original_log_metrics(self, payload, step=None)
+            else:
+                original_log_metrics(self, extra, step=step)
 
         if run_dir is not None and any(key in metrics for key in best_val_trigger_keys):
             try:
@@ -510,7 +605,8 @@ def install_gepa_wandb_grpo_compat_patch(
 def log_gepa_wandb_metrics(
     metrics: dict[str, float],
     *,
-    step: int,
+    rollouts: int,
+    iteration: int | None = None,
     project: str,
     experiment_name: str,
     run_dir: Path,
@@ -518,7 +614,7 @@ def log_gepa_wandb_metrics(
     wandb_dir: Path | None = None,
     finish: bool = False,
 ) -> None:
-    """Resume (if needed), log GRPO-comparable GEPA metrics, and optionally finish the run."""
+    """Resume (if needed), log GRPO-comparable GEPA metrics on the rollouts x-axis, and optionally finish."""
     try:
         import wandb
     except ImportError:
@@ -538,7 +634,10 @@ def log_gepa_wandb_metrics(
         wandb.init(**init_kwargs)
 
     assert wandb.run is not None
-    wandb.log(metrics, step=step)
+    ensure_gepa_wandb_rollouts_axis_defined()
+    payload = prepare_gepa_wandb_payload(metrics, iteration=iteration)
+    payload[GEPA_ROLLOUT_STEP_METRIC] = int(rollouts)
+    wandb.log(payload)
     save_wandb_run_id(run_dir, wandb.run.id)
     if finish:
         wandb.finish()

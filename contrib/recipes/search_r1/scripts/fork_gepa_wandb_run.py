@@ -1,13 +1,13 @@
-"""Fork a polluted GEPA WandB run and re-log only healthy iteration history.
+"""Fork a polluted GEPA WandB run and re-log only healthy rollout history.
 
 W&B cannot delete history rows or log below the run's current max ``_step``.
-When ``train_gepa.py`` or ``backfill_gepa_wandb.py`` logs final metrics at
-``step=total_metric_calls`` (e.g. 2569) instead of the last iteration (63),
-the run's step counter jumps ahead and resumed training metrics are rejected.
+When older runs logged final metrics at ``_step=total_metric_calls`` while per-iteration
+points used GEPA iteration as ``_step``, the run's step counter jumps ahead and resumed
+training metrics can be rejected.
 
-This script copies ``_step`` 0 through ``--max-iteration`` (default 63) from
-the source run into a **new** WandB run, preserving ``rollouts`` /
-``total_metric_calls`` alignment, and writes the new id to
+This script copies history rows whose ``rollouts`` / ``total_metric_calls`` is at or below
+``--max-rollouts`` (default: 2569) from the source run into a **new** WandB run with
+rollouts as the chart x-axis, and writes the new id to
 ``outputs/gepa_qwen25_3b/wandb_run_id.txt``.
 
 Usage (from ``contrib/recipes/search_r1``, with ``.env`` containing ``WANDB_API_KEY``)::
@@ -35,7 +35,7 @@ _RECIPE_DIR = _SCRIPTS_DIR.parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from wandb_run import save_wandb_run_id  # noqa: E402
+from wandb_run import ensure_gepa_wandb_rollouts_axis_defined, save_wandb_run_id  # noqa: E402
 
 DEFAULT_ENTITY = "ibm-bv"
 DEFAULT_PROJECT = "AgentLightning"
@@ -43,12 +43,12 @@ DEFAULT_PROJECT = "AgentLightning"
 PRESETS: dict[str, dict[str, Any]] = {
     "gepa_qwen25_3b": {
         "source_run": "sq5hdz51",
-        "max_iteration": 63,
+        "max_rollouts": 2569,
         "run_dir": "outputs/gepa_qwen25_3b",
         "name": "searchr1_qwen25_3b_gepa_clean",
         "notes": (
-            "Fork of sq5hdz51: iteration history 0-63 only; orphan final point at "
-            "_step=2569 (total_metric_calls) removed."
+            "Fork of sq5hdz51: rollout history through budget only; orphan iteration-_step "
+            "pollution removed."
         ),
     },
 }
@@ -81,8 +81,15 @@ def _scan_history_rows(api: Api, entity: str, project: str, run_id: str) -> list
 def _payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
     skip = {"_timestamp", "_runtime", "_step", "run_id"}
     payload = {k: v for k, v in row.items() if not k.startswith("_") and k not in skip and v is not None}
-    # Drop legacy dual-axis keys from polluted source runs.
-    return {k: v for k, v in payload.items() if not k.endswith("@rollouts") and k != "rollouts"}
+    # Drop legacy dual-axis mirror keys from polluted source runs.
+    return {k: v for k, v in payload.items() if not k.endswith("@rollouts")}
+
+
+def _rollouts_from_row(row: dict[str, Any]) -> int | None:
+    raw = row.get("rollouts", row.get("total_metric_calls"))
+    if raw is None:
+        return None
+    return int(raw)
 
 
 def fork_gepa_run(
@@ -90,7 +97,7 @@ def fork_gepa_run(
     entity: str,
     project: str,
     source_run: str,
-    max_iteration: int,
+    max_rollouts: int,
     run_dir: Path,
     name: str,
     notes: str,
@@ -109,29 +116,44 @@ def fork_gepa_run(
         raise RuntimeError(f"No history rows found for {source_path}")
 
     max_step = max(int(r["_step"]) for r in all_rows)
-    clipped = [row for row in all_rows if int(row["_step"]) <= max_iteration]
-    dropped = [int(row["_step"]) for row in all_rows if int(row["_step"]) > max_iteration]
+    clipped: list[dict[str, Any]] = []
+    dropped_rollouts: list[int] = []
+    for row in all_rows:
+        rollouts = _rollouts_from_row(row)
+        if rollouts is None:
+            rollouts = int(row.get("iteration", row["_step"]))
+        if rollouts <= max_rollouts:
+            clipped.append(row)
+        else:
+            dropped_rollouts.append(rollouts)
 
     logger.info(
-        "Source %s state=%s history_rows=%d max_step=%d clip<=%d kept=%d dropped_steps=%s",
+        "Source %s state=%s history_rows=%d max_step=%d clip_rollouts<=%d kept=%d dropped_rollouts=%s",
         source_path,
         source.state,
         len(all_rows),
         max_step,
-        max_iteration,
+        max_rollouts,
         len(clipped),
-        sorted(set(dropped)),
+        sorted(set(dropped_rollouts)),
     )
 
     merged: dict[int, dict[str, Any]] = {}
     for row in clipped:
-        step = int(row["_step"])
+        rollouts = _rollouts_from_row(row)
+        if rollouts is None:
+            rollouts = int(row.get("iteration", row["_step"]))
         payload = _payload_from_row(row)
-        merged[step] = payload
+        payload["rollouts"] = rollouts
+        if "iteration" not in payload:
+            iteration = row.get("iteration", row["_step"])
+            if iteration is not None:
+                payload["iteration"] = int(iteration)
+        merged[rollouts] = payload
         logger.info(
-            "  keep step %s: total_metric_calls=%s val/em=%s",
-            step,
-            payload.get("total_metric_calls"),
+            "  keep rollouts=%s iteration=%s val/em=%s",
+            rollouts,
+            payload.get("iteration"),
             payload.get("val/em"),
         )
 
@@ -149,19 +171,20 @@ def fork_gepa_run(
         config={
             **source_config,
             "forked_from": source_run,
-            "max_iteration_clipped": max_iteration,
-            "dropped_orphan_steps": sorted(set(dropped)),
+            "max_rollouts_clipped": max_rollouts,
+            "dropped_orphan_rollouts": sorted(set(dropped_rollouts)),
         },
         settings=wandb.Settings(_disable_stats=True, silent=False),
     )
     assert run is not None
+    ensure_gepa_wandb_rollouts_axis_defined()
 
     logged = 0
-    for step in sorted(merged):
-        payload = merged[step]
+    for rollouts in sorted(merged):
+        payload = merged[rollouts]
         if not payload:
             continue
-        run.log(payload, step=step)
+        run.log(payload)
         logged += 1
 
     last_payload = merged[max(merged)] if merged else {}
@@ -184,7 +207,7 @@ def fork_gepa_run(
 
     run.finish()
     new_id = run.id
-    logger.info("Created run %s (%s steps logged, max _step=%s)", new_id, logged, max(merged) if merged else None)
+    logger.info("Created run %s (%s steps logged, max rollouts=%s)", new_id, logged, max(merged) if merged else None)
     logger.info("View: https://wandb.ai/%s/%s/runs/%s", entity, project, new_id)
 
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -199,10 +222,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--project", default=DEFAULT_PROJECT)
     parser.add_argument("--source-run", help="Polluted source W&B run id")
     parser.add_argument(
-        "--max-iteration",
+        "--max-rollouts",
         type=int,
-        default=63,
-        help="Keep source history with _step <= this iteration (default: 63)",
+        default=2569,
+        help="Keep source history with rollouts/total_metric_calls <= this budget (default: 2569)",
     )
     parser.add_argument(
         "--run-dir",
@@ -224,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     source_run = args.source_run
-    max_iteration = args.max_iteration
+    max_rollouts = args.max_rollouts
     run_dir = args.run_dir
     name = args.name
     notes = args.notes
@@ -232,7 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.preset:
         preset = PRESETS[args.preset]
         source_run = source_run or preset["source_run"]
-        max_iteration = preset.get("max_iteration", max_iteration)
+        max_rollouts = preset.get("max_rollouts", max_rollouts)
         run_dir = run_dir if args.run_dir != (_RECIPE_DIR / "outputs" / "gepa_qwen25_3b") else (_RECIPE_DIR / preset["run_dir"])
         name = name or preset["name"]
         notes = notes or preset["notes"]
@@ -252,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
             entity=args.entity,
             project=args.project,
             source_run=source_run,
-            max_iteration=max_iteration,
+            max_rollouts=max_rollouts,
             run_dir=run_dir,
             name=name,
             notes=notes,

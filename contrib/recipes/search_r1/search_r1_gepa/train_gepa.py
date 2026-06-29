@@ -326,7 +326,8 @@ def main() -> None:
                 "val/em": seed_val_em,
                 "val/reward": seed_val_em,
             },
-            step=0,
+            rollouts=0,
+            iteration=0,
             project=WANDB_PROJECT,
             experiment_name=variant.wandb_experiment,
             run_dir=args.run_dir,
@@ -384,7 +385,7 @@ def main() -> None:
     prompt_path = args.run_dir / "best_instruction_prompt.txt"
     prompt_path.write_text(best_candidate[INSTRUCTION_COMPONENT])
 
-    # GEPA logs with step=iteration; total_metric_calls is logged as a separate metric.
+    # Final summary on the rollout-budget x-axis; iteration kept as a reference field.
     log_gepa_wandb_metrics(
         {
             "val/em": best_val_em,
@@ -396,7 +397,8 @@ def main() -> None:
             "total_metric_calls": final_rollouts,
             "iteration": final_iteration,
         },
-        step=final_iteration,
+        rollouts=final_rollouts,
+        iteration=final_iteration,
         project=WANDB_PROJECT,
         experiment_name=variant.wandb_experiment,
         run_dir=args.run_dir,

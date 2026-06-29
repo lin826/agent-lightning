@@ -70,7 +70,7 @@ def main() -> None:
         "seed/val_em": seed_val_em,
     }
 
-    iteration_metrics: list[tuple[int, dict[str, float]]] = []
+    iteration_metrics: list[tuple[int, int, dict[str, float]]] = []
     try:
         import wandb
         from wandb.apis.public import Api
@@ -78,7 +78,10 @@ def main() -> None:
         api = Api()
         entity = os.environ.get("WANDB_ENTITY", "ibm-bv")
         run = api.run(f"{entity}/{WANDB_PROJECT}/{args.run_id}")
-        history = run.history(keys=["val_program_average", "base_program_full_valset_score"], pandas=True)
+        history = run.history(
+            keys=["val_program_average", "base_program_full_valset_score", "rollouts", "total_metric_calls"],
+            pandas=True,
+        )
         val_col = (
             "val_program_average"
             if "val_program_average" in history.columns
@@ -86,14 +89,20 @@ def main() -> None:
         )
         if not history.empty and val_col in history.columns:
             for _, row in history.iterrows():
-                step = int(row["_step"])
+                iteration = int(row.get("iteration", row["_step"]))
+                rollouts_raw = row.get("rollouts", row.get("total_metric_calls"))
+                if rollouts_raw != rollouts_raw:  # NaN
+                    rollouts = iteration
+                else:
+                    rollouts = int(rollouts_raw)
                 raw = row[val_col]
                 if raw != raw:  # NaN
                     continue
                 score = float(raw)
                 iteration_metrics.append(
                     (
-                        step,
+                        rollouts,
+                        iteration,
                         {
                             "val/reward": score,
                             "val/em": score,
@@ -123,13 +132,13 @@ def main() -> None:
             final_iteration = total_metric_calls
 
     if args.dry_run:
-        logger.info("Would log seed metrics at step 0: %s", seed_metrics)
-        for step, metrics in iteration_metrics:
-            logger.info("Would log iteration metrics at step %s: %s", step, metrics)
+        logger.info("Would log seed metrics at rollouts=0: %s", seed_metrics)
+        for rollouts, iteration, metrics in iteration_metrics:
+            logger.info("Would log iteration metrics at rollouts=%s (iteration=%s): %s", rollouts, iteration, metrics)
         logger.info(
-            "Would log final metrics at step %s (total_metric_calls=%s): %s",
-            final_iteration,
+            "Would log final metrics at rollouts=%s (iteration=%s): %s",
             total_metric_calls,
+            final_iteration,
             final_metrics,
         )
         logger.info("Would update run summary with final + seed metrics")
@@ -154,7 +163,8 @@ def main() -> None:
     # Append-only history: steps at or below the run's current max step are ignored by WandB.
     log_gepa_wandb_metrics(
         seed_metrics,
-        step=0,
+        rollouts=0,
+        iteration=0,
         project=WANDB_PROJECT,
         experiment_name=WANDB_EXPERIMENT,
         run_dir=args.run_dir,
@@ -163,10 +173,11 @@ def main() -> None:
         finish=True,
     )
 
-    for step, metrics in iteration_metrics:
+    for rollouts, iteration, metrics in iteration_metrics:
         log_gepa_wandb_metrics(
             metrics,
-            step=step,
+            rollouts=rollouts,
+            iteration=iteration,
             project=WANDB_PROJECT,
             experiment_name=WANDB_EXPERIMENT,
             run_dir=args.run_dir,
@@ -181,7 +192,8 @@ def main() -> None:
             "total_metric_calls": total_metric_calls,
             "iteration": final_iteration,
         },
-        step=final_iteration,
+        rollouts=total_metric_calls,
+        iteration=final_iteration,
         project=WANDB_PROJECT,
         experiment_name=WANDB_EXPERIMENT,
         run_dir=args.run_dir,
@@ -190,11 +202,11 @@ def main() -> None:
         finish=True,
     )
     logger.info(
-        "Backfilled run %s: seed step 0, %d iteration steps, final step %s (total_metric_calls=%s)",
+        "Backfilled run %s: seed rollouts=0, %d rollout steps, final rollouts=%s (iteration=%s)",
         args.run_id,
         len(iteration_metrics),
-        final_iteration,
         total_metric_calls,
+        final_iteration,
     )
 
 
