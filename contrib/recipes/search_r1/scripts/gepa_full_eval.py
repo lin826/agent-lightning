@@ -1,7 +1,7 @@
-"""Submit full test.parquet eval when GEPA dev-subset validation hits a new best.
+"""Submit full test.parquet eval when GEPA validation hits a new best.
 
-GEPA optimizes against ``test_dev.parquet`` (200 hotpotqa examples). Whenever the
-historical dev-subset best (``best_score_on_valset`` / ``best_valset_agg_score``)
+GEPA optimizes against ``test.parquet`` (7405 hotpotqa examples). Whenever the
+historical val best (``best_score_on_valset`` / ``best_valset_agg_score``)
 improves, persist the best program prompt from ``gepa_state.bin`` and submit an LSF
 eval job (``eval/eval_gepa_prompt.bsub``) to score it on ``test.parquet`` (7405 examples).
 
@@ -36,6 +36,105 @@ TRAINING_SESSION_FILENAME = "training_session.json"
 
 DEFAULT_EVAL_JOB_TAG = "qwen25_3b_gepa"
 DEFAULT_ADDR_FILE = "bm25_server_addr_eval_gepa.txt"
+SEED_INSTRUCTION_FILENAME = "seed_instruction_prompt.txt"
+BEST_INSTRUCTION_FILENAME = "best_instruction_prompt.txt"
+
+# In-memory program prompts keyed by resolved run_dir. GEPA saves gepa_state.bin at the
+# *start* of each iteration, so in-process full-eval triggers see stale disk until the
+# next save — cache live candidates from log_detailed_metrics instead.
+_program_prompt_cache: dict[str, dict[int, dict[str, str]]] = {}
+
+
+def _instruction_component_name() -> str:
+    try:
+        from search_r1_gepa.search_r1_gepa_adapter import INSTRUCTION_COMPONENT
+
+        return INSTRUCTION_COMPONENT
+    except (ImportError, ModuleNotFoundError):
+        return "instruction_prompt"
+
+
+def _cache_key(run_dir: Path) -> str:
+    return str(run_dir.resolve())
+
+
+def clear_program_prompt_cache(run_dir: Path) -> None:
+    """Drop cached program prompts for *run_dir* (e.g. on a fresh training session)."""
+    _program_prompt_cache.pop(_cache_key(run_dir), None)
+
+
+def register_program_candidates(run_dir: Path, candidates: list[dict[str, str]]) -> None:
+    """Register live GEPA program prompts for *run_dir*."""
+    bucket = _program_prompt_cache.setdefault(_cache_key(run_dir), {})
+    for idx, prompt in enumerate(candidates):
+        bucket[idx] = prompt
+
+
+def get_cached_program_prompt(run_dir: Path, program_idx: int) -> dict[str, str] | None:
+    """Return a cached program prompt when available."""
+    bucket = _program_prompt_cache.get(_cache_key(run_dir))
+    if bucket is None:
+        return None
+    return bucket.get(program_idx)
+
+
+def save_seed_instruction_prompt(run_dir: Path, prompt: dict[str, str]) -> Path:
+    """Persist the seed instruction once per run (never overwritten on resume)."""
+    try:
+        from search_r1_gepa.search_r1_gepa_adapter import INSTRUCTION_COMPONENT
+    except (ImportError, ModuleNotFoundError):
+        INSTRUCTION_COMPONENT = "instruction_prompt"  # type: ignore[misc, assignment]
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    path = run_dir / SEED_INSTRUCTION_FILENAME
+    if path.is_file():
+        return path
+    instruction = prompt.get(INSTRUCTION_COMPONENT, "")
+    path.write_text(instruction)
+    return path
+
+
+def install_gepa_program_prompt_cache(run_dir: Path) -> None:
+    """Cache live program prompts and inject them into GEPA metrics before full-eval triggers."""
+    import gepa.logging.utils as gepa_log_utils
+
+    if getattr(gepa_log_utils, "_agl_prompt_cache_patched", False):
+        return
+
+    original = gepa_log_utils.log_detailed_metrics_after_discovering_new_program
+
+    def patched(
+        *,
+        gepa_state: Any,
+        new_program_idx: int,
+        experiment_tracker: Any,
+        **kwargs: Any,
+    ) -> None:
+        register_program_candidates(run_dir, gepa_state.program_candidates)
+        original_log = experiment_tracker.log_metrics
+
+        def enriching_log_metrics(metrics: dict[str, Any], step: int | None = None) -> None:
+            metrics = dict(metrics)
+            if 0 <= new_program_idx < len(gepa_state.program_candidates):
+                prompt = gepa_state.program_candidates[new_program_idx]
+                component = _instruction_component_name()
+                if component in prompt:
+                    metrics[f"new_instruction_{component}"] = prompt[component]
+            original_log(metrics, step=step)
+
+        experiment_tracker.log_metrics = enriching_log_metrics
+        try:
+            original(
+                gepa_state=gepa_state,
+                new_program_idx=new_program_idx,
+                experiment_tracker=experiment_tracker,
+                **kwargs,
+            )
+        finally:
+            experiment_tracker.log_metrics = original_log
+
+    gepa_log_utils.log_detailed_metrics_after_discovering_new_program = patched
+    gepa_log_utils._agl_prompt_cache_patched = True
 
 
 @dataclass
@@ -223,8 +322,7 @@ def save_gepa_prompt(
     instruction = prompt.get(INSTRUCTION_COMPONENT, "")
     prompt_path = prompt_dir / f"best_m{metric_calls}_idx{program_idx}.txt"
     prompt_path.write_text(instruction)
-    latest = run_dir / "best_instruction_prompt.txt"
-    latest.write_text(instruction)
+    (run_dir / BEST_INSTRUCTION_FILENAME).write_text(instruction)
     return prompt_path
 
 
@@ -384,6 +482,10 @@ def _resolve_program_prompt(
         if loaded is not None:
             return loaded[3]
 
+    cached = get_cached_program_prompt(run_dir, program_idx)
+    if cached is not None:
+        return cached
+
     state_path = run_dir / "gepa_state.bin"
     if state_path.is_file():
         try:
@@ -393,18 +495,29 @@ def _resolve_program_prompt(
             candidates = state.program_candidates
             if 0 <= program_idx < len(candidates):
                 return candidates[program_idx]
-            if candidates:
-                return candidates[0]
+            if program_idx >= len(candidates):
+                logger.debug(
+                    "Program %d not yet in gepa_state.bin for %s (have %d candidates)",
+                    program_idx,
+                    run_dir,
+                    len(candidates),
+                )
         except Exception as exc:
             logger.warning("Failed to read program %d from gepa_state.bin: %s", program_idx, exc)
 
-    try:
-        from search_r1_gepa.search_r1_gepa_adapter import default_seed_candidate
+    if program_idx == 0:
+        seed_path = run_dir / SEED_INSTRUCTION_FILENAME
+        if seed_path.is_file():
+            return {_instruction_component_name(): seed_path.read_text()}
+        try:
+            from search_r1_gepa.search_r1_gepa_adapter import default_seed_candidate
 
-        return default_seed_candidate(use_rewrite=use_rewrite)
-    except (ImportError, ModuleNotFoundError):
-        logger.warning("Cannot resolve prompt for full-test eval trigger")
-        return None
+            return default_seed_candidate(use_rewrite=use_rewrite)
+        except (ImportError, ModuleNotFoundError):
+            logger.warning("Cannot resolve seed prompt for full-test eval trigger")
+            return None
+
+    return None
 
 
 def collect_full_eval_trigger_candidates(
@@ -438,21 +551,29 @@ def collect_full_eval_trigger_candidates(
                     use_rewrite=use_rewrite,
                     prefer_best_from_state=False,
                 )
-        if prompt is None:
+        if prompt is None and program_idx is None:
             loaded = load_best_from_gepa_state(run_dir)
             if loaded is not None:
                 program_idx = loaded[2]
                 prompt = loaded[3]
             else:
-                program_idx = program_idx if program_idx is not None else 0
+                program_idx = 0
                 prompt = _resolve_program_prompt(
                     run_dir,
                     program_idx,
                     use_rewrite=use_rewrite,
                     prefer_best_from_state=False,
                 )
-        if prompt is not None:
-            candidates.append((dev_score, metric_calls, program_idx if program_idx is not None else 0, prompt))
+        if prompt is None:
+            logger.warning(
+                "Skipping full-test eval trigger at metric_calls=%d: "
+                "cannot resolve prompt for program_idx=%s in %s",
+                metric_calls,
+                program_idx,
+                run_dir,
+            )
+            break
+        candidates.append((dev_score, metric_calls, program_idx if program_idx is not None else 0, prompt))
         break
 
     return candidates
@@ -571,15 +692,6 @@ def maybe_trigger_full_eval(
     return False
 
 
-def _instruction_component_name() -> str:
-    try:
-        from search_r1_gepa.search_r1_gepa_adapter import INSTRUCTION_COMPONENT
-
-        return INSTRUCTION_COMPONENT
-    except (ImportError, ModuleNotFoundError):
-        return "instruction_prompt"
-
-
 def resolve_gepa_eval_prompt(
     run_dir: Path,
     metric_calls: int,
@@ -599,7 +711,7 @@ def resolve_gepa_eval_prompt(
         and fe_state.best_program_idx == program_idx
         and fe_state.best_program_idx >= 0
     ):
-        latest = run_dir / "best_instruction_prompt.txt"
+        latest = run_dir / BEST_INSTRUCTION_FILENAME
         if latest.is_file():
             return {component: latest.read_text()}
 

@@ -95,6 +95,11 @@ def main() -> None:
         action="store_true",
         help="Use <rewrite> turn during rollouts (must match training variant)",
     )
+    parser.add_argument(
+        "--shaped",
+        action="store_true",
+        help="Use shaped-reward GEPA variant run dir (must match training variant)",
+    )
     parser.add_argument("--batch-size", type=int, default=20)
     parser.add_argument(
         "--rollout-concurrency",
@@ -105,9 +110,13 @@ def main() -> None:
     parser.add_argument("--wandb-run-id", default=None, help="Override eval WandB run id (default: auto-resolve)")
     args = parser.parse_args()
 
-    variant = resolve_gepa_variant(rewrite=args.rewrite)
+    variant = resolve_gepa_variant(rewrite=args.rewrite, shaped=args.shaped)
     if args.run_dir is None:
-        args.run_dir = default_run_dir(_RECIPE_DIR, rewrite=args.rewrite)
+        args.run_dir = default_run_dir(
+            _RECIPE_DIR,
+            rewrite=variant.use_rewrite,
+            shaped=variant.reward_mode == "shaped",
+        )
 
     api_base = os.environ.get("OPENAI_API_BASE", "")
     if not api_base:

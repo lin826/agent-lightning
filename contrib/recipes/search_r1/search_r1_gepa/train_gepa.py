@@ -13,7 +13,7 @@ Environment:
     RETRIEVAL_SERVER_URL or RETRIEVAL_SERVER_ADDR_FILE — BM25 server (required)
     OPENAI_API_BASE — vLLM OpenAI endpoint for Qwen2.5-3B-Instruct (required)
     GEPA_MAX_METRIC_CALLS — absolute optimization budget (default: 60000; train_gepa.bsub sets 60000)
-    GEPA_CHUNK_METRIC_CALLS — incremental budget per job/chunk (default when set: 2760 ≈ one GRPO step)
+    GEPA_CHUNK_METRIC_CALLS — incremental budget per job/chunk (default when set: 9965 ≈ one GRPO step)
     GEPA_ROLLOUT_CONCURRENCY — parallel Search-R1 rollouts (default: 8)
     GEPA_REFLECTION_MINIBATCH_SIZE — reflection minibatch for gepa.optimize (default: 16)
     GEPA_REFLECTION_LM — litellm model id for reflection (default: same as task LM)
@@ -52,7 +52,14 @@ from search_r1_gepa.search_r1_gepa_adapter import (  # noqa: E402
     resolve_reward_mode,
 )
 from search_r1_agent import INSTRUCTION_FORMAT, INSTRUCTION_FORMAT_REWRITE  # noqa: E402
-from gepa_full_eval import maybe_trigger_full_eval, start_training_session  # noqa: E402
+from gepa_full_eval import (  # noqa: E402
+    clear_program_prompt_cache,
+    install_gepa_program_prompt_cache,
+    maybe_trigger_full_eval,
+    register_program_candidates,
+    save_seed_instruction_prompt,
+    start_training_session,
+)
 from wandb_run import (  # noqa: E402
     build_gepa_wandb_init_kwargs,
     install_gepa_wandb_grpo_compat_patch,
@@ -68,7 +75,7 @@ WANDB_PROJECT = "AgentLightning"
 MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
 DATA_SOURCE = "hotpotqa"
 TRAIN_FILE = "data/train.parquet"
-VAL_FILE = "data/test_dev.parquet"
+VAL_FILE = "data/test.parquet"
 DEFAULT_MAX_METRIC_CALLS = 60000
 DEFAULT_ROLLOUT_CONCURRENCY = 8
 DEFAULT_REFLECTION_MINIBATCH_SIZE = 16
@@ -76,7 +83,7 @@ DEFAULT_REFLECTION_MINIBATCH_SIZE = 16
 # GRPO parity: one global_step ≈ train rollouts + val rollouts (RL_TRAINING_CONFIG in train_search_r1_agent.py).
 GRPO_TRAIN_BATCH_SIZE = 512
 GRPO_ROLLOUT_N = 5
-GRPO_VAL_EXAMPLES = 200  # hotpotqa rows in data/test_dev.parquet
+GRPO_VAL_EXAMPLES = 7405  # hotpotqa rows in data/test.parquet (full val set)
 DEFAULT_GRPO_STEP_ROLLOUTS = GRPO_TRAIN_BATCH_SIZE * GRPO_ROLLOUT_N + GRPO_VAL_EXAMPLES
 
 
@@ -390,6 +397,8 @@ def main() -> None:
                 "gepa.optimize may create a new WandB run"
             )
     start_training_session(args.run_dir, fresh=fresh_session)
+    if fresh_session:
+        clear_program_prompt_cache(args.run_dir)
 
     rollout_concurrency = resolve_rollout_concurrency(args.rollout_concurrency)
     logger.info("Rollout concurrency=%d", rollout_concurrency)
@@ -420,6 +429,9 @@ def main() -> None:
 
     seed_candidate = default_seed_candidate(use_rewrite=variant.use_rewrite)
     seed_instruction = INSTRUCTION_FORMAT_REWRITE if variant.use_rewrite else INSTRUCTION_FORMAT
+    save_seed_instruction_prompt(args.run_dir, seed_candidate)
+    register_program_candidates(args.run_dir, [seed_candidate])
+    install_gepa_program_prompt_cache(args.run_dir)
     wandb_config: dict[str, Any] = {
         "baseline": "gepa",
         "variant": variant.name,
@@ -545,6 +557,7 @@ def main() -> None:
 
     prompt_path = args.run_dir / "best_instruction_prompt.txt"
     prompt_path.write_text(best_candidate[INSTRUCTION_COMPONENT])
+    save_seed_instruction_prompt(args.run_dir, seed_candidate)
 
     # Final summary on the rollout-budget x-axis; Step kept as a reference field.
     log_gepa_wandb_metrics(
