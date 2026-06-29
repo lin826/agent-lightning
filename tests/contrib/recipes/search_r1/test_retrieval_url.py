@@ -72,3 +72,49 @@ def test_refresh_retrieval_url_reads_addr_file(monkeypatch: pytest.MonkeyPatch, 
 
     assert refreshed == "http://fresh-server:8080"
     assert agent._retrieval_url() == "http://fresh-server:8080"
+
+
+def test_retrieval_retries_forever_during_training_until_success(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    addr_file = tmp_path / "bm25_server_addr_train.txt"
+    addr_file.write_text("http://train-server:8000")
+
+    monkeypatch.setenv("RETRIEVAL_SERVER_URL", "http://train-server:8000")
+    monkeypatch.setenv("RETRIEVAL_SERVER_ADDR_FILE", str(addr_file))
+    monkeypatch.setattr(agent, "_RETRIEVAL_TRAIN_RETRY_SLEEP_S", 0.0)
+
+    call_count = 0
+
+    def mock_post(url: str, **kwargs: object) -> MagicMock:
+        nonlocal call_count
+        call_count += 1
+        if call_count < 4:
+            raise requests.ConnectionError("connection refused")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"passages": ["Title | recovered passage"]}
+        mock_resp.raise_for_status = MagicMock()
+        return mock_resp
+
+    monkeypatch.setattr(agent.requests, "post", mock_post)
+
+    result = agent.retrieve_doc("test query", retry_forever=True)
+
+    assert "recovered passage" in result
+    assert call_count == 4
+
+
+def test_retrieval_does_not_retry_forever_without_training_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RETRIEVAL_SERVER_URL", "http://down-server:8000")
+    monkeypatch.setattr(agent, "_RETRIEVAL_MAX_RETRIES", 1)
+    monkeypatch.setattr(agent, "_RETRIEVAL_BACKOFF_BASE_S", 0.0)
+
+    def mock_post(url: str, **kwargs: object) -> MagicMock:
+        raise requests.ConnectionError("connection refused")
+
+    monkeypatch.setattr(agent.requests, "post", mock_post)
+
+    with pytest.raises(requests.ConnectionError):
+        agent.retrieve_doc("test query", retry_forever=False)

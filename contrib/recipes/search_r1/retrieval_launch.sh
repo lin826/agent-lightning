@@ -11,4 +11,7 @@ python scripts/retrieval_server.py --index_path $index_file \
                                             --topk 3 \
                                             --retriever_name $retriever_name \
                                             --retriever_model $retriever_path \
-                                            --faiss_gpu
+                                            --search-batch-size 32 \
+                                            --search-batch-wait-ms 10 \
+                                            --faiss_gpu \
+                                            --max-process-num 8

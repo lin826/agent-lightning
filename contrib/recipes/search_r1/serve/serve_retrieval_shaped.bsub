@@ -30,14 +30,5 @@ mkdir -p "${TRITON_CACHE_DIR}" "${XDG_CACHE_HOME}" "${RECIPE}/outputs"
 rm -f "${ADDR_FILE}"
 
 cd "${PPLRL}"
-
-${PYTHON} scripts/torch_bm25_server.py \
-    --wiki-dir "${WIKI}" --bm25-device cuda --addr-file "${ADDR_FILE}" &
-SRV_PID=$!
-
-${PYTHON} scripts/gpu_keepalive.py &
-KEEP_PID=$!
-
-trap "kill ${KEEP_PID} 2>/dev/null; rm -f ${ADDR_FILE}" EXIT
-
-wait ${SRV_PID}
+# shellcheck source=serve/_retrieval_server_launch.sh
+source "${RECIPE}/serve/_retrieval_server_launch.sh"
