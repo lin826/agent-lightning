@@ -195,7 +195,7 @@ def test_install_gepa_wandb_grpo_compat_patch_prefers_per_step_val_over_pareto(m
 
 
 def test_ensure_gepa_rollouts_axis_defined_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    wandb_run._gepa_rollouts_axis_defined_run_ids.clear()
+    wandb_run._gepa_wandb_axes_defined_run_ids.clear()
     define_calls: list[tuple[str, ...]] = []
 
     fake_run = MagicMock()
@@ -210,17 +210,22 @@ def test_ensure_gepa_rollouts_axis_defined_only_once(monkeypatch: pytest.MonkeyP
     fake_wandb.define_metric = fake_define_metric
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
 
-    wandb_run.ensure_gepa_rollouts_axis_defined()
-    wandb_run.ensure_gepa_rollouts_axis_defined()
+    wandb_run.ensure_gepa_wandb_step_axes_defined()
+    wandb_run.ensure_gepa_wandb_step_axes_defined()
 
-    assert define_calls == [
-        ("rollouts",),
-        ("*", ("step_metric", "rollouts")),
-    ]
+    expected = [("rollouts", ("summary", "max")), ("iteration", ("summary", "max"))]
+    expected.extend(
+        (wandb_run.gepa_rollout_axis_metric_name(metric), ("step_metric", "rollouts"))
+        for metric in wandb_run.GEPA_ROLLOUT_AXIS_METRICS
+    )
+    assert define_calls == expected
+    assert ("*", ("step_metric", "rollouts")) not in define_calls
+
+    wandb_run._gepa_wandb_axes_defined_run_ids.clear()
 
 
 def test_log_gepa_wandb_metrics_stamps_rollouts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    wandb_run._gepa_rollouts_axis_defined_run_ids.clear()
+    wandb_run._gepa_wandb_axes_defined_run_ids.clear()
     logged: list[tuple[dict[str, float], int]] = []
     define_calls: list[str] = []
 
@@ -252,8 +257,12 @@ def test_log_gepa_wandb_metrics_stamps_rollouts(monkeypatch: pytest.MonkeyPatch,
         run_dir=tmp_path,
     )
 
-    assert define_calls == ["rollouts", "*"]
+    assert "rollouts" in define_calls
+    assert "iteration" in define_calls
+    assert "val/em@rollouts" in define_calls
     assert logged[0][0]["rollouts"] == 120
+    assert logged[0][0]["iteration"] == 3
+    assert logged[0][0]["val/em@rollouts"] == 0.5
     assert logged[0][1] == 3
 
 
@@ -261,7 +270,7 @@ def test_install_gepa_wandb_grpo_compat_patch_stamps_rollouts(monkeypatch: pytes
     pytest.importorskip("gepa")
     from gepa.logging.experiment_tracker import ExperimentTracker
 
-    wandb_run._gepa_rollouts_axis_defined_run_ids.clear()
+    wandb_run._gepa_wandb_axes_defined_run_ids.clear()
     if hasattr(ExperimentTracker, "_agl_grpo_compat_patched"):
         delattr(ExperimentTracker, "_agl_grpo_compat_patched")
 
@@ -289,9 +298,12 @@ def test_install_gepa_wandb_grpo_compat_patch_stamps_rollouts(monkeypatch: pytes
         step=42,
     )
 
-    assert define_calls == ["rollouts", "*"]
+    assert "rollouts" in define_calls
     assert logged[0][0]["rollouts"] == 87
-    assert logged[1][0]["rollouts"] == 87
+    assert logged[0][0]["iteration"] == 42
+    compat_payload = logged[1][0]
+    assert compat_payload["rollouts"] == 87
+    assert compat_payload["val/reward@rollouts"] == pytest.approx(0.24)
 
 
 def test_install_gepa_wandb_grpo_compat_patch_historical_best_does_not_clobber_per_step_val(
@@ -323,6 +335,30 @@ def test_install_gepa_wandb_grpo_compat_patch_historical_best_does_not_clobber_p
     best_logs = [entry for entry, _ in logged if "val/best_single_program_em" in entry]
     assert best_logs[-1]["val/best_single_program_em"] == pytest.approx(0.235)
     assert "val/em" not in best_logs[-1]
+
+
+def test_resolve_gepa_iteration_for_metric_calls_uses_full_eval_state(tmp_path: Path) -> None:
+    from gepa_full_eval import FullEvalState, save_full_eval_state
+
+    run_dir = tmp_path / "gepa_run"
+    run_dir.mkdir()
+    save_full_eval_state(
+        run_dir,
+        FullEvalState(iteration_by_metric_calls={1631: 45}),
+    )
+    assert wandb_run.resolve_gepa_iteration_for_metric_calls(run_dir, 1631) == 45
+    assert wandb_run.resolve_gepa_iteration_for_metric_calls(run_dir, 0) == 0
+
+
+def test_prepare_gepa_wandb_payload_mirrors_rollout_axis() -> None:
+    payload = wandb_run.prepare_gepa_wandb_payload(
+        {"val/reward": 0.3, "total_metric_calls": 99},
+        iteration=7,
+    )
+    assert payload["iteration"] == 7
+    assert payload["rollouts"] == 99
+    assert payload["val/reward"] == 0.3
+    assert payload["val/reward@rollouts"] == 0.3
 
 
 def test_setup_wandb_resume_sets_run_name() -> None:

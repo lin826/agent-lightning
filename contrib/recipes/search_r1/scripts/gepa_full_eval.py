@@ -45,6 +45,7 @@ class FullEvalState:
     best_program_idx: int = -1
     submitted_metric_calls: list[int] = field(default_factory=list)
     training_session_id: str = ""
+    iteration_by_metric_calls: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -165,12 +166,15 @@ def load_full_eval_state(run_dir: Path) -> FullEvalState:
         session_id = session.session_id if session is not None else ""
         return FullEvalState(training_session_id=session_id)
     data = json.loads(path.read_text())
+    raw_iterations = data.get("iteration_by_metric_calls", {})
+    iteration_by_metric_calls = {int(k): int(v) for k, v in raw_iterations.items()}
     state = FullEvalState(
         best_dev_score=float(data.get("best_dev_score", -1.0)),
         best_metric_calls=int(data.get("best_metric_calls", -1)),
         best_program_idx=int(data.get("best_program_idx", -1)),
         submitted_metric_calls=list(data.get("submitted_metric_calls", [])),
         training_session_id=str(data.get("training_session_id", "")),
+        iteration_by_metric_calls=iteration_by_metric_calls,
     )
     if session is not None and state.training_session_id != session.session_id:
         logger.info(
@@ -192,6 +196,9 @@ def save_full_eval_state(run_dir: Path, state: FullEvalState) -> None:
         "best_program_idx": state.best_program_idx,
         "submitted_metric_calls": state.submitted_metric_calls,
         "training_session_id": session_id,
+        "iteration_by_metric_calls": {
+            str(metric_calls): iteration for metric_calls, iteration in state.iteration_by_metric_calls.items()
+        },
     }
     full_eval_state_path(run_dir).write_text(json.dumps(payload, indent=2))
 
@@ -435,6 +442,7 @@ def maybe_trigger_full_eval_from_metrics(
             run_dir_rel=run_dir_rel,
             use_rewrite=use_rewrite,
             dry_run=dry_run,
+            iteration=step,
         ):
             triggered = True
     return triggered
@@ -452,6 +460,7 @@ def maybe_trigger_full_eval(
     run_dir_rel: str = "outputs/gepa_qwen25_3b",
     use_rewrite: bool = False,
     dry_run: bool = False,
+    iteration: int | None = None,
 ) -> bool:
     """Submit full-test eval when ``dev_score`` beats the tracked dev-subset best."""
     session = load_training_session(run_dir)
@@ -483,6 +492,8 @@ def maybe_trigger_full_eval(
         state.best_dev_score = dev_score
         state.best_metric_calls = metric_calls
         state.best_program_idx = program_idx
+        if iteration is not None:
+            state.iteration_by_metric_calls[metric_calls] = iteration
         save_full_eval_state(run_dir, state)
         return False
 
@@ -512,6 +523,8 @@ def maybe_trigger_full_eval(
         state.best_metric_calls = metric_calls
         state.best_program_idx = program_idx
         state.submitted_metric_calls.append(metric_calls)
+        if iteration is not None:
+            state.iteration_by_metric_calls[metric_calls] = iteration
         save_full_eval_state(run_dir, state)
         return True
     return False

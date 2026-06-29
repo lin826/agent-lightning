@@ -35,7 +35,6 @@ from typing import (
 )
 
 import datasets
-import faiss  # type: ignore[reportMissingTypeStubs]
 import numpy as np
 import torch
 import uvicorn
@@ -653,6 +652,13 @@ class TorchBM25Retriever(BaseRetriever):
 class DenseRetriever(BaseRetriever):
     def __init__(self, config: Config) -> None:
         super().__init__(config)
+        try:
+            import faiss  # type: ignore[reportMissingTypeStubs]
+        except ImportError as exc:
+            raise RuntimeError(
+                "faiss is required for dense retrieval. pip install faiss-gpu (or faiss-cpu), "
+                "or use --retriever_name bm25 / --bm25-backend torch."
+            ) from exc
         index: Any = faiss.read_index(self.index_path)  # type: ignore[no-untyped-call]
         if config.faiss_gpu:
             co: Any = faiss.GpuMultipleClonerOptions()  # type: ignore[attr-defined]

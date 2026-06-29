@@ -22,7 +22,33 @@ EVAL_WANDB_RUN_NAMES: dict[str, str] = {
     "qwen3_8b_shaped": "eval_shaped",
 }
 
-_gepa_rollouts_axis_defined_run_ids: set[str] = set()
+# WandB display names for GEPA full-test eval runs (``eval_gepa_prompt.py``).
+GEPA_EVAL_WANDB_RUN_NAMES: dict[str, str] = {
+    "baseline": "eval_gepa",
+    "rewrite": "eval_gepa_rewrite",
+}
+
+GEPA_ROLLOUT_STEP_METRIC = "rollouts"
+GEPA_ITERATION_STEP_METRIC = "iteration"
+
+# Metrics logged on the default WandB step axis (``_step`` = GEPA iteration). Duplicate
+# ``metric@rollouts`` keys are registered with ``step_metric="rollouts"`` so charts can
+# switch between training-step and rollout-budget x-axes in the WandB UI.
+GEPA_ROLLOUT_AXIS_METRICS: tuple[str, ...] = (
+    "val/reward",
+    "val/em",
+    "training/reward",
+    "training/em",
+    "val/pareto_front_agg",
+    "val/best_single_program_em",
+    "seed/val_em",
+    "test/reward",
+    "test/em",
+)
+
+_gepa_wandb_axes_defined_run_ids: set[str] = set()
+# Backward-compatible alias for tests and fork scripts.
+_gepa_rollouts_axis_defined_run_ids = _gepa_wandb_axes_defined_run_ids
 
 
 def resolve_eval_wandb_run_name(config_key: str) -> str:
@@ -40,6 +66,27 @@ def resolve_eval_wandb_run_name(config_key: str) -> str:
     except KeyError as exc:
         known = ", ".join(sorted(EVAL_WANDB_RUN_NAMES))
         raise KeyError(f"Unknown eval config key {config_key!r}; expected one of: {known}") from exc
+
+
+def resolve_gepa_eval_wandb_run_name(variant_name: str) -> str:
+    """Return the WandB run name for a GEPA full-test eval variant.
+
+    Override with ``WANDB_EVAL_RUN_NAME`` (e.g. ``eval_gepa``).
+
+    Args:
+        variant_name: GEPA variant key (``baseline`` or ``rewrite``).
+
+    Raises:
+        KeyError: If ``variant_name`` is not a known GEPA eval variant.
+    """
+    override = os.environ.get("WANDB_EVAL_RUN_NAME", "").strip()
+    if override:
+        return override
+    try:
+        return GEPA_EVAL_WANDB_RUN_NAMES[variant_name]
+    except KeyError as exc:
+        known = ", ".join(sorted(GEPA_EVAL_WANDB_RUN_NAMES))
+        raise KeyError(f"Unknown GEPA eval variant {variant_name!r}; expected one of: {known}") from exc
 
 
 def checkpoint_root_from_actor(actor_path: Path) -> Path:
@@ -332,8 +379,13 @@ def build_gepa_wandb_init_kwargs(
     return kwargs
 
 
-def ensure_gepa_rollouts_axis_defined() -> None:
-    """Register ``rollouts`` as a WandB step metric once per run (GRPO parity)."""
+def gepa_rollout_axis_metric_name(metric: str) -> str:
+    """Return the rollout-budget alias for a GEPA metric (``val/reward@rollouts``)."""
+    return f"{metric}@rollouts"
+
+
+def ensure_gepa_wandb_step_axes_defined() -> None:
+    """Register GEPA iteration (``_step``) and rollout-budget custom x-axes once per run."""
     try:
         import wandb
     except ImportError:
@@ -344,22 +396,118 @@ def ensure_gepa_rollouts_axis_defined() -> None:
         return
 
     run_id = run.id
-    if run_id in _gepa_rollouts_axis_defined_run_ids:
+    if run_id in _gepa_wandb_axes_defined_run_ids:
         return
 
-    wandb.define_metric("rollouts")
-    wandb.define_metric("*", step_metric="rollouts")
-    _gepa_rollouts_axis_defined_run_ids.add(run_id)
+    wandb.define_metric(GEPA_ROLLOUT_STEP_METRIC, summary="max")
+    wandb.define_metric(GEPA_ITERATION_STEP_METRIC, summary="max")
+    for metric in GEPA_ROLLOUT_AXIS_METRICS:
+        wandb.define_metric(gepa_rollout_axis_metric_name(metric), step_metric=GEPA_ROLLOUT_STEP_METRIC)
+    _gepa_wandb_axes_defined_run_ids.add(run_id)
+
+
+def ensure_gepa_rollouts_axis_defined() -> None:
+    """Backward-compatible alias for :func:`ensure_gepa_wandb_step_axes_defined`."""
+    ensure_gepa_wandb_step_axes_defined()
+
+
+def stamp_gepa_step_fields(metrics: dict[str, Any], *, iteration: int | None = None) -> None:
+    """Stamp ``iteration`` and ``rollouts`` fields used by WandB custom x-axes."""
+    if iteration is not None:
+        metrics[GEPA_ITERATION_STEP_METRIC] = int(iteration)
+    elif GEPA_ITERATION_STEP_METRIC not in metrics and "iteration" in metrics:
+        metrics[GEPA_ITERATION_STEP_METRIC] = int(metrics["iteration"])
+
+    if GEPA_ROLLOUT_STEP_METRIC in metrics:
+        return
+    if "total_metric_calls" in metrics:
+        metrics[GEPA_ROLLOUT_STEP_METRIC] = int(metrics["total_metric_calls"])
+    elif iteration == 0:
+        metrics[GEPA_ROLLOUT_STEP_METRIC] = 0
 
 
 def stamp_gepa_rollouts_metric(metrics: dict[str, Any], *, step: int | None = None) -> None:
-    """Stamp cumulative rollout count for WandB's rollouts x-axis when missing."""
-    if "rollouts" in metrics:
-        return
-    if "total_metric_calls" in metrics:
-        metrics["rollouts"] = int(metrics["total_metric_calls"])
-    elif step is not None:
-        metrics["rollouts"] = int(step)
+    """Stamp rollout-budget and iteration fields (legacy name; prefer :func:`stamp_gepa_step_fields`)."""
+    stamp_gepa_step_fields(metrics, iteration=step)
+
+
+def mirror_gepa_metrics_to_rollout_axis(metrics: dict[str, Any]) -> dict[str, float | int]:
+    """Duplicate iteration-axis metrics under ``@rollouts`` keys for rollout-budget charts."""
+    mirrored: dict[str, float | int] = {}
+    for metric in GEPA_ROLLOUT_AXIS_METRICS:
+        if metric in metrics:
+            mirrored[gepa_rollout_axis_metric_name(metric)] = metrics[metric]
+    return mirrored
+
+
+def prepare_gepa_wandb_payload(metrics: dict[str, Any], *, iteration: int) -> dict[str, Any]:
+    """Return a WandB payload with both iteration- and rollout-axis metric keys."""
+    payload = dict(metrics)
+    stamp_gepa_step_fields(payload, iteration=iteration)
+    payload.update(mirror_gepa_metrics_to_rollout_axis(payload))
+    return payload
+
+
+def resolve_gepa_iteration_for_metric_calls(
+    run_dir: Path,
+    metric_calls: int,
+    *,
+    project: str = "AgentLightning",
+    wandb_dir: Path | None = None,
+) -> int:
+    """Map a rollout budget (``metric_calls``) to the GEPA iteration for WandB ``_step``.
+
+    Full-test eval logs ``test/reward`` on the training run at the iteration that
+    produced the prompt, not at ``metric_calls``, so ``_step`` stays aligned with
+    per-iteration training curves.
+    """
+    if metric_calls <= 0:
+        return 0
+
+    try:
+        from gepa_full_eval import load_full_eval_state
+
+        fe_state = load_full_eval_state(run_dir)
+        iteration = fe_state.iteration_by_metric_calls.get(metric_calls)
+        if iteration is not None:
+            return int(iteration)
+    except Exception as exc:
+        logger.debug("Could not read iteration map from full_eval_state: %s", exc)
+
+    run_id = load_wandb_run_id(run_dir)
+    if run_id:
+        try:
+            from wandb.apis.public import Api
+
+            entity = os.environ.get("WANDB_ENTITY", "ibm-bv")
+            run = Api().run(f"{entity}/{project}/{run_id}")
+            for row in run.scan_history(keys=["rollouts", "total_metric_calls", "iteration", "_step"]):
+                rollouts = row.get("rollouts", row.get("total_metric_calls"))
+                if rollouts is None or int(rollouts) != metric_calls:
+                    continue
+                iteration = row.get("iteration", row.get("_step"))
+                if iteration is not None:
+                    return int(iteration)
+        except Exception as exc:
+            logger.debug("Could not resolve iteration for metric_calls=%s from WandB API: %s", metric_calls, exc)
+
+    if wandb_dir is not None and wandb_dir.is_dir():
+        experiment_names = (
+            "searchr1_qwen25_3b_gepa",
+            "searchr1_qwen25_3b_gepa_rewrite",
+        )
+        for name in experiment_names:
+            local_id = find_wandb_run_id_from_local(wandb_dir, name)
+            if local_id != run_id:
+                continue
+
+    logger.warning(
+        "Could not map metric_calls=%d to a GEPA iteration in %s; using metric_calls as WandB step "
+        "(rollout-axis metrics will still be correct)",
+        metric_calls,
+        run_dir,
+    )
+    return metric_calls
 
 
 def install_gepa_wandb_grpo_compat_patch(*, reflection_minibatch_size: int) -> None:
@@ -378,14 +526,14 @@ def install_gepa_wandb_grpo_compat_patch(*, reflection_minibatch_size: int) -> N
 
     def log_metrics(self: ExperimentTracker, metrics: dict[str, Any], step: int | None = None) -> None:
         if self.use_wandb and step is not None:
-            ensure_gepa_rollouts_axis_defined()
-            stamp_gepa_rollouts_metric(metrics, step=step)
+            ensure_gepa_wandb_step_axes_defined()
+            stamp_gepa_step_fields(metrics, iteration=step)
 
         original_log_metrics(self, metrics, step=step)
         if not self.use_wandb or step is None:
             return
 
-        extra: dict[str, float] = {}
+        extra: dict[str, float | int] = {}
         # Per-step validation signal: mean EM of the program evaluated on valset this iteration
         # (new candidate after acceptance, or the base seed at iteration 1).
         if "val_program_average" in metrics:
@@ -415,8 +563,10 @@ def install_gepa_wandb_grpo_compat_patch(*, reflection_minibatch_size: int) -> N
             extra["training/em"] = train_mean
 
         if extra:
-            extra["rollouts"] = int(metrics.get("total_metric_calls", step))
-            original_log_metrics(self, extra, step=step)
+            if "total_metric_calls" in metrics:
+                extra["total_metric_calls"] = int(metrics["total_metric_calls"])
+            payload = prepare_gepa_wandb_payload(extra, iteration=step)
+            original_log_metrics(self, payload, step=step)
 
     ExperimentTracker.log_metrics = log_metrics  # type: ignore[method-assign]
     ExperimentTracker._agl_grpo_compat_patched = True
@@ -453,9 +603,9 @@ def log_gepa_wandb_metrics(
         wandb.init(**init_kwargs)
 
     assert wandb.run is not None
-    ensure_gepa_rollouts_axis_defined()
-    stamp_gepa_rollouts_metric(metrics, step=step)
-    wandb.log(metrics, step=step)
+    ensure_gepa_wandb_step_axes_defined()
+    payload = prepare_gepa_wandb_payload(metrics, iteration=step)
+    wandb.log(payload, step=step)
     save_wandb_run_id(run_dir, wandb.run.id)
     if finish:
         wandb.finish()

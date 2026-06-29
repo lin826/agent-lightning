@@ -101,9 +101,13 @@ When eval pollution or a crashed job leaves the training WandB run ahead of the 
 
 ### Retrieval server parallelism
 
-LSF serve jobs request **8× H100 80 GB** (`#BSUB -gpu num=8`) and launch `scripts/retrieval_server.py` via `serve/_retrieval_server_launch.sh`. **Production default is dense e5 + FAISS** (`RETRIEVAL_MODE=dense`, index/corpus under `data/e5_Flat.index` and `data/wiki-18.jsonl`). Dense mode loads **one encoder replica per visible GPU**, shards FAISS with **`--faiss_gpu`**, and **micro-batches concurrent `/search` requests** (`SEARCH_BATCH_SIZE=32`, `SEARCH_BATCH_WAIT_MS=10`) so rollouts fan encode work across all GPUs instead of pinning `cuda:0`.
+LSF serve jobs request **8× H100 80 GB** (`#BSUB -gpu num=8`) and launch `scripts/retrieval_server.py` via `serve/_retrieval_server_launch.sh`. All `serve/serve_retrieval_*.bsub` scripts export **GPU torch BM25** before sourcing the launch helper (`RETRIEVAL_MODE=bm25`, `BM25_BACKEND=torch`, `TORCH_BM25_DEVICE=cuda`), row-sharded across visible GPUs via bm25_pt.
 
-**BM25 fallback:** set `RETRIEVAL_MODE=bm25` and `WIKI` in the launch helper. Default BM25 backend is **GPU torch BM25** (`BM25_BACKEND=torch`, row-sharded across visible GPUs via bm25_pt). CPU **bm25s** / Lucene remain available (`BM25_BACKEND=bm25s|lucene`); bm25s batch search uses outer threads with `n_threads=1` per query to avoid oversubscription. All `serve/serve_retrieval_*.bsub` scripts source the shared launch helper.
+**Dense e5 + FAISS** remains available for local dev (`RETRIEVAL_MODE=dense`, index/corpus under `data/e5_Flat.index` and `data/wiki-18.jsonl`). Dense mode loads **one encoder replica per visible GPU**, shards FAISS with **`--faiss_gpu`**, and **micro-batches concurrent `/search` requests** (`SEARCH_BATCH_SIZE=32`, `SEARCH_BATCH_WAIT_MS=10`) so rollouts fan encode work across all GPUs instead of pinning `cuda:0`.
+
+CPU **bm25s** / Lucene remain available as BM25 backends (`BM25_BACKEND=bm25s|lucene`); bm25s batch search uses outer threads with `n_threads=1` per query to avoid oversubscription.
+
+BM25 serve jobs also launch `scripts/gpu_keepalive.py` alongside the retrieval server. It runs a small matmul on each visible GPU on a fixed duty cycle (default **~5%** utilization via `KEEPALIVE_TARGET_UTIL=0.05`) so idle gaps do not trip cluster GPU reapers, without the prior burst-to-100% sawtooth.
 
 ### Retrieval server health monitoring
 

@@ -26,6 +26,13 @@ export TRITON_CACHE_DIR="${CACHE_ROOT}/triton"
 export XDG_CACHE_HOME="${CACHE_ROOT}/xdg"
 
 mkdir -p "${TRITON_CACHE_DIR}" "${XDG_CACHE_HOME}" "${RECIPE}/outputs"
+
+# GPU torch BM25 sharded across all 8 granted GPUs (dp=8, tp=1); not dense e5.
+export RETRIEVAL_MODE=bm25
+export BM25_BACKEND=torch
+export TORCH_BM25_DEVICE=cuda
+
+# Remove stale addr file so the training job does not connect to a dead server.
 rm -f "${ADDR_FILE}"
 
 cd "${PPLRL}"

@@ -35,7 +35,11 @@ _RECIPE_DIR = _SCRIPTS_DIR.parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from wandb_run import ensure_gepa_rollouts_axis_defined, save_wandb_run_id, stamp_gepa_rollouts_metric  # noqa: E402
+from wandb_run import (  # noqa: E402
+    ensure_gepa_wandb_step_axes_defined,
+    prepare_gepa_wandb_payload,
+    save_wandb_run_id,
+)
 
 DEFAULT_ENTITY = "ibm-bv"
 DEFAULT_PROJECT = "AgentLightning"
@@ -125,8 +129,7 @@ def fork_gepa_run(
     for row in clipped:
         step = int(row["_step"])
         payload = _payload_from_row(row)
-        stamp_gepa_rollouts_metric(payload, step=step)
-        merged[step] = payload
+        merged[step] = prepare_gepa_wandb_payload(payload, iteration=step)
         logger.info(
             "  keep step %s: iteration=%s rollouts=%s total_metric_calls=%s val/em=%s",
             step,
@@ -156,7 +159,7 @@ def fork_gepa_run(
         settings=wandb.Settings(_disable_stats=True, silent=False),
     )
     assert run is not None
-    ensure_gepa_rollouts_axis_defined()
+    ensure_gepa_wandb_step_axes_defined()
 
     logged = 0
     for step in sorted(merged):

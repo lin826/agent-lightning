@@ -91,6 +91,8 @@ if [ -f "${GEPA_RUN_DIR}/wandb_eval_run_id.txt" ]; then
   export WANDB_RUN_ID=$(tr -d '[:space:]' < "${GEPA_RUN_DIR}/wandb_eval_run_id.txt")
   export WANDB_RESUME=allow
   echo "Resuming WandB eval run ${WANDB_RUN_ID} from ${GEPA_RUN_DIR}/wandb_eval_run_id.txt"
+else
+  export WANDB_EVAL_RUN_NAME=${WANDB_EVAL_RUN_NAME:-eval_gepa}
 fi
 
 echo "Evaluating prompt ${PROMPT_PATH} on full test.parquet (metric_calls=%METRIC_CALLS%, rollout_concurrency=${GEPA_ROLLOUT_CONCURRENCY}) ..."

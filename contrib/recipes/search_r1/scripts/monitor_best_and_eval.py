@@ -442,6 +442,17 @@ def maybe_submit_gepa_eval(name: str, gepa_exp: dict[str, object], state: Experi
     if load_training_session(run_dir) is None:
         return False
 
+    iteration: int | None = None
+    state_path = run_dir / "gepa_state.bin"
+    if state_path.is_file():
+        try:
+            from gepa.core.state import GEPAState
+
+            gepa_state = GEPAState.load(str(run_dir))
+            iteration = gepa_state.i + 1
+        except Exception:
+            iteration = None
+
     prompt = resolve_gepa_eval_prompt(
         run_dir,
         state.best_step,
@@ -466,6 +477,7 @@ def maybe_submit_gepa_eval(name: str, gepa_exp: dict[str, object], state: Experi
         run_dir_rel=str(gepa_exp["run_dir_rel"]),
         use_rewrite=bool(gepa_exp["use_rewrite"]),
         dry_run=dry_run,
+        iteration=iteration,
     ):
         state.eval_submitted_steps = list(load_full_eval_state(run_dir).submitted_metric_calls)
         return True

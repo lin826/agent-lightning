@@ -46,8 +46,11 @@ from search_r1_gepa.train_gepa import (  # noqa: E402
 from wandb_run import (  # noqa: E402
     load_wandb_run_id,
     log_gepa_wandb_metrics,
+    resolve_gepa_eval_wandb_run_name,
+    resolve_gepa_iteration_for_metric_calls,
     resolve_wandb_eval_run_id,
     save_wandb_eval_run_id,
+    setup_wandb_resume,
     validate_wandb_run_id,
 )
 
@@ -148,6 +151,7 @@ def main() -> None:
     try:
         import wandb
 
+        eval_run_name = resolve_gepa_eval_wandb_run_name(variant.name)
         run_id = args.wandb_run_id or resolve_wandb_eval_run_id(run_dir=args.run_dir)
         run_id = validate_wandb_run_id(
             run_id,
@@ -155,9 +159,22 @@ def main() -> None:
             directory=args.run_dir,
             kind="eval",
         )
+        if run_id:
+            setup_wandb_resume(run_id, run_name=eval_run_name)
+            logger.info(
+                "Resuming WandB eval run %s (%s) for full-test eval at metric_calls=%d",
+                run_id,
+                eval_run_name,
+                args.metric_calls,
+            )
+        else:
+            os.environ.pop("WANDB_RUN_ID", None)
+            os.environ.pop("WANDB_RESUME", None)
+            os.environ["WANDB_NAME"] = eval_run_name
+            logger.info("No eval WandB run id found; creating eval run %r", eval_run_name)
         wandb_init_kwargs: dict[str, object] = {
             "project": WANDB_PROJECT,
-            "name": variant.wandb_experiment,
+            "name": eval_run_name,
             "config": {
                 "eval_type": "full_test",
                 "metric_calls": args.metric_calls,
@@ -170,9 +187,6 @@ def main() -> None:
         if run_id:
             wandb_init_kwargs["id"] = run_id
             wandb_init_kwargs["resume"] = "allow"
-            logger.info("Resuming WandB eval run %s for full-test eval at metric_calls=%d", run_id, args.metric_calls)
-        else:
-            logger.info("No eval WandB run id found; creating a new eval run")
         wandb.init(**wandb_init_kwargs)
         assert wandb.run is not None
         wandb.log(
@@ -189,20 +203,28 @@ def main() -> None:
         logger.warning("wandb not installed; skipping WandB logging")
 
     if load_wandb_run_id(args.run_dir):
+        train_iteration = resolve_gepa_iteration_for_metric_calls(
+            args.run_dir,
+            args.metric_calls,
+            project=WANDB_PROJECT,
+            wandb_dir=_RECIPE_DIR / "wandb",
+        )
         log_gepa_wandb_metrics(
             {
                 "test/em": test_em,
                 "test/reward": test_em,
+                "total_metric_calls": args.metric_calls,
             },
-            step=args.metric_calls,
+            step=train_iteration,
             project=WANDB_PROJECT,
             experiment_name=variant.wandb_experiment,
             run_dir=args.run_dir,
             finish=True,
         )
         logger.info(
-            "Logged test/em=%.4f to GEPA training WandB run at metric_calls=%d",
+            "Logged test/em=%.4f to GEPA training WandB run at iteration=%d (metric_calls=%d)",
             test_em,
+            train_iteration,
             args.metric_calls,
         )
 

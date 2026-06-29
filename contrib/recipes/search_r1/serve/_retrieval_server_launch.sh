@@ -10,7 +10,8 @@
 # Requires: PYTHON, ADDR_FILE, RECIPE. Optional: DENSE_INDEX, DENSE_CORPUS, RETRIEVER_MODEL.
 
 RETRIEVAL_SCRIPT="${RECIPE}/scripts/retrieval_server.py"
-PPLRL=${PPLRL:-/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl}
+KEEPALIVE_SCRIPT="${RECIPE}/scripts/gpu_keepalive.py"
+KEEPALIVE_TARGET_UTIL=${KEEPALIVE_TARGET_UTIL:-0.05}
 RETRIEVAL_MODE=${RETRIEVAL_MODE:-dense}
 SEARCH_BATCH_SIZE=${SEARCH_BATCH_SIZE:-32}
 SEARCH_BATCH_WAIT_MS=${SEARCH_BATCH_WAIT_MS:-10}
@@ -32,7 +33,8 @@ if [[ "${RETRIEVAL_MODE}" == "bm25" ]]; then
         --max-process-num "${BM25_MAX_PROCESS_NUM}" \
         --addr-file "${ADDR_FILE}" &
     SRV_PID=$!
-    "${PYTHON}" "${PPLRL}/scripts/gpu_keepalive.py" &
+    export KEEPALIVE_TARGET_UTIL
+    "${PYTHON}" "${KEEPALIVE_SCRIPT}" &
     KEEP_PID=$!
     trap "kill ${KEEP_PID} 2>/dev/null; rm -f ${ADDR_FILE}" EXIT
 else
