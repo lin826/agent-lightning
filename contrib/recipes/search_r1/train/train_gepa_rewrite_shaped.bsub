@@ -89,14 +89,15 @@ fi
 export OPENAI_API_BASE=$(cat "${VLLM_ADDR_FILE}")
 export OPENAI_API_KEY=${OPENAI_API_KEY:-token-abc123}
 export GEPA_MAX_METRIC_CALLS=${GEPA_MAX_METRIC_CALLS:-60000}
-export GEPA_REFLECTION_MINIBATCH_SIZE=${GEPA_REFLECTION_MINIBATCH_SIZE:-16}
+export GEPA_VAL_DATA=${GEPA_VAL_DATA:-data/test.parquet}
+export GEPA_REFLECTION_MINIBATCH_SIZE=${GEPA_REFLECTION_MINIBATCH_SIZE:-8}
 export GEPA_ROLLOUT_CONCURRENCY=${GEPA_ROLLOUT_CONCURRENCY}
 export GEPA_REFLECTION_LM=${GEPA_REFLECTION_LM:-openai/Qwen/Qwen2.5-3B-Instruct}
 export LITELLM_API_BASE=${OPENAI_API_BASE}
 export LITELLM_API_KEY=${OPENAI_API_KEY}
 
 echo "vLLM ready: ${OPENAI_API_BASE}"
-echo "GEPA rewrite+shaped max_metric_calls=${GEPA_MAX_METRIC_CALLS} rollout_concurrency=${GEPA_ROLLOUT_CONCURRENCY} reflection_minibatch_size=${GEPA_REFLECTION_MINIBATCH_SIZE}"
+echo "GEPA rewrite+shaped max_metric_calls=${GEPA_MAX_METRIC_CALLS} val=${GEPA_VAL_DATA} rollout_concurrency=${GEPA_ROLLOUT_CONCURRENCY} reflection_minibatch_size=${GEPA_REFLECTION_MINIBATCH_SIZE}"
 
 cd "${RECIPE}"
 ${PYTHON} search_r1_gepa/train_gepa.py --rewrite --shaped --run-dir "${GEPA_RUN_DIR}"

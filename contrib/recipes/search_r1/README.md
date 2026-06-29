@@ -32,7 +32,7 @@ Job scripts moved from the recipe root into `train/`, `serve/`, and `eval/`; Pyt
 To compare **Genetic-Pareto prompt evolution** (GEPA) against GRPO weight updates on the same Search-R1 task:
 
 - **Task model:** `Qwen/Qwen2.5-3B-Instruct` (frozen weights; only the instruction prompt evolves)
-- **Data:** `hotpotqa` filter on `data/train.parquet` / `data/test_dev.parquet` (same as `qwen7b` / `qwen3_8b` GRPO configs)
+- **Data:** `hotpotqa` filter on `data/train.parquet` / `data/test.parquet` (7405 val examples; same as `qwen7b` / `qwen3_8b` GRPO configs)
 - **Retrieval:** training uses `serve/serve_retrieval_gepa.bsub` (`outputs/bm25_server_addr_gepa.txt`); full-test eval uses `serve/serve_retrieval_eval_gepa.bsub` (`outputs/bm25_server_addr_eval_gepa.txt`), same train/eval split as GRPO variants
 - **Metric:** exact match via `qa_em.py`
 - **WandB:** project `AgentLightning`, run `searchr1_qwen25_3b_gepa`
@@ -44,12 +44,12 @@ To compare **Genetic-Pareto prompt evolution** (GEPA) against GRPO weight update
 bsub < train/train_gepa.bsub
 ```
 
-Optional env vars: `GEPA_MAX_METRIC_CALLS` (default 60000), `GEPA_REFLECTION_MINIBATCH_SIZE` (default 16), `GEPA_ROLLOUT_CONCURRENCY` (default 8), `GEPA_REFLECTION_LM` (default: same local vLLM endpoint).
+Optional env vars: `GEPA_MAX_METRIC_CALLS` (default 60000), `GEPA_VAL_DATA` (default `data/test.parquet`, full hotpotqa val — use `data/test_dev.parquet` for smoke tests), `GEPA_REFLECTION_MINIBATCH_SIZE` (default 8), `GEPA_ROLLOUT_CONCURRENCY` (default 8), `GEPA_REFLECTION_LM` (default: same local vLLM endpoint). Set `GEPA_FRESH_SESSION=1` to wipe `gepa_state.bin` and start a new WandB run (required when changing the val set).
 
-**GRPO-step parity (chunked runs):** set `GEPA_CHUNK_METRIC_CALLS` to budget one LSF job like one GRPO `global_step`. Each chunk adds that many metric calls on top of `gepa_state.bin`’s `total_num_evals` (fresh start: 0 + chunk). Default chunk size is **2760** = `512 × rollout.n(5) + 200` val examples — same formula as `RL_TRAINING_CONFIG` in `scripts/train_search_r1_agent.py`. On resume, `train_gepa.py` skips the redundant pre-optimize seed `evaluate_split` (saves 200 rollouts); seed eval inside `gepa.optimize` still runs only on a fresh start. Submit one chunk per job:
+**GRPO-step parity (chunked runs):** set `GEPA_CHUNK_METRIC_CALLS` to budget one LSF job like one GRPO `global_step`. Each chunk adds that many metric calls on top of `gepa_state.bin`’s `total_num_evals` (fresh start: 0 + chunk). Default chunk size is **9965** = `512 × rollout.n(5) + 7405` val examples — same formula as `RL_TRAINING_CONFIG` in `scripts/train_search_r1_agent.py`. On resume, `train_gepa.py` skips the redundant pre-optimize seed `evaluate_split` (saves 7405 rollouts); seed eval inside `gepa.optimize` still runs only on a fresh start. Submit one chunk per job:
 
 ```bash
-export GEPA_CHUNK_METRIC_CALLS=2760
+export GEPA_CHUNK_METRIC_CALLS=9965
 bsub < train/train_gepa.bsub
 # or use the convenience wrapper:
 bsub < train/run_gepa_chunked.bsub
@@ -86,7 +86,7 @@ WandB run: `searchr1_qwen25_3b_gepa_rewrite_shaped`. State under `outputs/gepa_q
 
 ### Retrieval server pairing (GRPO + GEPA)
 
-Each variant needs **separate** BM25 servers for training and full-test eval. Do not share `serve_retrieval_*.bsub`, `serve_retrieval_eval_*.bsub`, or addr files across variants, and do not point eval jobs at training addr files (or vice versa).
+Each variant needs **separate** BM25 servers for training and full-test eval. Each `serve/serve_retrieval_*.bsub` and `serve/serve_retrieval_eval_*.bsub` job requests **4× H100** (`RETRIEVAL_NUM_WORKERS=4`, load-balanced workers on ports `BASE+1` … `BASE+4`). Do not share `serve_retrieval_*.bsub`, `serve_retrieval_eval_*.bsub`, or addr files across variants, and do not point eval jobs at training addr files (or vice versa).
 
 | Variant | Train LSF job | Train serve script | Train addr file | Train script | Eval LSF job | Eval serve script | Eval addr file | Eval |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -136,7 +136,7 @@ When eval pollution or a crashed job leaves the training WandB run ahead of the 
 
 ### Retrieval server parallelism
 
-LSF serve jobs request **8× H100 80 GB** (`#BSUB -gpu num=8`) and launch `scripts/retrieval_server.py` via `serve/_retrieval_server_launch.sh`. Production BM25 jobs set **`RETRIEVAL_NUM_WORKERS=8`**: eight independent uvicorn processes each load the **full** torch BM25 index on `cuda:0` … `cuda:7` (no row-sharding inside a process), and a round-robin **load balancer** on the base port fans `/search` across workers. The addr file still holds a **single** URL (the balancer); agents and monitors are unchanged.
+LSF serve jobs request **4× H100 80 GB** (`#BSUB -gpu num=4`) and launch `scripts/retrieval_server.py` via `serve/_retrieval_server_launch.sh`. Production BM25 jobs set **`RETRIEVAL_NUM_WORKERS=4`**: four independent uvicorn processes each load the **full** torch BM25 index on `cuda:0` … `cuda:3` (no row-sharding inside a process), and a round-robin **load balancer** on the base port fans `/search` across workers (worker ports `BASE+1` … `BASE+4`). The addr file still holds a **single** URL (the balancer); agents and monitors are unchanged.
 
 Legacy **single-process row-shard** mode remains available (`RETRIEVAL_NUM_WORKERS=1`, `TORCH_BM25_DEVICE=cuda`): one process shards `_corpus_scores` row-wise across all visible GPUs.
 
@@ -258,6 +258,8 @@ The `qwen7b` configuration targets `Qwen/Qwen2.5-3B-Instruct` and is optimised f
 
 * raises `gpu_memory_utilization` to **0.6** so vLLM can use more of the available VRAM for KV-cache,
 * **disables CPU offloading** for both actor and reference model parameters and the actor optimiser states, eliminating the PCIe bottleneck on each training step.
+
+All production GRPO configs (`qwen7b`, `qwen3_8b`, `rewrite`, `rewrite_em`, `shaped`) validate on the **full hotpotqa test set** (`data/test.parquet`, 7405 examples) every step (`test_freq: 1`). The CI `fast` config keeps the smaller `data/test_dev.parquet` subset (200 hotpotqa examples) for speed.
 
 1. **Start Ray**
 

@@ -15,8 +15,10 @@ Environment:
     GEPA_MAX_METRIC_CALLS — absolute optimization budget (default: 60000; train_gepa.bsub sets 60000)
     GEPA_CHUNK_METRIC_CALLS — incremental budget per job/chunk (default when set: 9965 ≈ one GRPO step)
     GEPA_ROLLOUT_CONCURRENCY — parallel Search-R1 rollouts (default: 8)
-    GEPA_REFLECTION_MINIBATCH_SIZE — reflection minibatch for gepa.optimize (default: 16)
+    GEPA_REFLECTION_MINIBATCH_SIZE — reflection minibatch for gepa.optimize (default: 8)
     GEPA_REFLECTION_LM — litellm model id for reflection (default: same as task LM)
+    GEPA_VAL_DATA — val parquet relative to data dir (default: data/test.parquet, full hotpotqa val)
+    GEPA_FRESH_SESSION — when 1/true/yes, wipe gepa_state and start a new WandB run (no resume)
     GEPA_TRAIN_SUBSET — optional cap on hotpotqa train examples for smoke tests
     GEPA_TRAIN_TEMPERATURE — rollout temperature during gepa.optimize (default: 1.0)
     GEPA_VAL_TEMPERATURE — rollout temperature for seed/final val eval (default: 0.0)
@@ -28,6 +30,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,10 +78,10 @@ WANDB_PROJECT = "AgentLightning"
 MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
 DATA_SOURCE = "hotpotqa"
 TRAIN_FILE = "data/train.parquet"
-VAL_FILE = "data/test.parquet"
+DEFAULT_VAL_FILE = "data/test.parquet"
 DEFAULT_MAX_METRIC_CALLS = 60000
 DEFAULT_ROLLOUT_CONCURRENCY = 8
-DEFAULT_REFLECTION_MINIBATCH_SIZE = 16
+DEFAULT_REFLECTION_MINIBATCH_SIZE = 8
 
 # GRPO parity: one global_step ≈ train rollouts + val rollouts (RL_TRAINING_CONFIG in train_search_r1_agent.py).
 GRPO_TRAIN_BATCH_SIZE = 512
@@ -164,6 +167,35 @@ def resolve_rollout_concurrency(cli_value: int | None) -> int:
     if os.environ.get("GEPA_ROLLOUT_CONCURRENCY"):
         return max(1, int(os.environ["GEPA_ROLLOUT_CONCURRENCY"]))
     return DEFAULT_ROLLOUT_CONCURRENCY
+
+
+def resolve_val_file() -> str:
+    """Return val parquet path (relative to data dir); mirrors GRPO ``val_files`` override."""
+    env_val = os.environ.get("GEPA_VAL_DATA")
+    if env_val is not None and env_val.strip():
+        return env_val.strip()
+    return DEFAULT_VAL_FILE
+
+
+def wipe_gepa_run_state(run_dir: Path) -> None:
+    """Remove resumed optimization artifacts so a fresh session starts clean."""
+    for name in (
+        "gepa_state.bin",
+        "gepa_summary.json",
+        "best_instruction_prompt.txt",
+        "wandb_run_id.txt",
+        "full_eval_state.json",
+        "training_session.json",
+    ):
+        path = run_dir / name
+        if path.is_file():
+            path.unlink()
+            logger.info("Removed %s", path)
+    for dirname in ("generated_best_outputs_valset", "monitored_prompts"):
+        path = run_dir / dirname
+        if path.is_dir():
+            shutil.rmtree(path)
+            logger.info("Removed %s", path)
 
 
 def resolve_reflection_minibatch_size(cli_value: int | None) -> int:
@@ -261,9 +293,15 @@ def load_seed_val_em(run_dir: Path) -> float | None:
     return None
 
 
-def load_dataset(data_dir: Path, *, train_subset: int | None = None) -> tuple[list[SearchR1DataInst], list[SearchR1DataInst]]:
+def load_dataset(
+    data_dir: Path,
+    *,
+    train_subset: int | None = None,
+    val_file: str | None = None,
+) -> tuple[list[SearchR1DataInst], list[SearchR1DataInst]]:
+    val_path = val_file or resolve_val_file()
     train_df = pd.read_parquet(data_dir / TRAIN_FILE)
-    val_df = pd.read_parquet(data_dir / VAL_FILE)
+    val_df = pd.read_parquet(data_dir / val_path)
     train_df = train_df[train_df["data_source"] == DATA_SOURCE]
     val_df = val_df[val_df["data_source"] == DATA_SOURCE]
 
@@ -287,7 +325,7 @@ def load_dataset(data_dir: Path, *, train_subset: int | None = None) -> tuple[li
 
     train_data = _to_records(train_df)
     val_data = _to_records(val_df)
-    logger.info("Loaded hotpotqa split: train=%d val=%d", len(train_data), len(val_data))
+    logger.info("Loaded hotpotqa split: train=%d val=%d (from %s)", len(train_data), len(val_data), val_path)
     return train_data, val_data
 
 
@@ -337,7 +375,7 @@ def main() -> None:
         "--reflection-minibatch-size",
         type=int,
         default=None,
-        help="Reflection minibatch size (default: GEPA_REFLECTION_MINIBATCH_SIZE or 16)",
+        help="Reflection minibatch size (default: GEPA_REFLECTION_MINIBATCH_SIZE or 8)",
     )
     parser.add_argument("--train-subset", type=int, default=None, help="Cap train examples (smoke tests)")
     parser.add_argument(
@@ -367,11 +405,14 @@ def main() -> None:
     if not reflection_lm:
         reflection_lm = f"openai/{MODEL_NAME}"
 
-    train_data, val_data = load_dataset(args.data_dir, train_subset=train_subset)
+    val_file = resolve_val_file()
+    train_data, val_data = load_dataset(args.data_dir, train_subset=train_subset, val_file=val_file)
     args.run_dir.mkdir(parents=True, exist_ok=True)
 
     wandb_dir = _RECIPE_DIR / "wandb"
     fresh_session = os.environ.get("GEPA_FRESH_SESSION", "").lower() in {"1", "true", "yes"}
+    if fresh_session:
+        wipe_gepa_run_state(args.run_dir)
     gepa_state_path = args.run_dir / "gepa_state.bin"
     resuming_gepa = gepa_state_path.is_file() and not fresh_session
 
@@ -440,7 +481,7 @@ def main() -> None:
         "model": MODEL_NAME,
         "data_source": DATA_SOURCE,
         "train_file": TRAIN_FILE,
-        "val_file": VAL_FILE,
+        "val_file": val_file,
         "max_metric_calls": max_metric_calls,
         "chunk_metric_calls": chunk_metric_calls,
         "prior_total_evals": prior_total_evals,
