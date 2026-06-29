@@ -68,6 +68,30 @@ def test_build_gepa_wandb_init_kwargs_resumes_from_file(tmp_path: Path) -> None:
     assert kwargs["resume"] == "allow"
 
 
+def test_resolve_gepa_wandb_run_id_falls_back_to_local_wandb(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    wandb_run.save_wandb_run_id(tmp_path, "deleted_run")
+    wandb_dir = tmp_path / "wandb"
+    run_dir = wandb_dir / "run-20260628_043054-sq5hdz51"
+    (run_dir / "logs").mkdir(parents=True)
+    (run_dir / "logs" / "debug.log").write_text("Syncing run searchr1_qwen25_3b_gepa\n")
+
+    monkeypatch.setattr(
+        wandb_run,
+        "validate_wandb_run_id",
+        lambda run_id, **kwargs: run_id if run_id == "sq5hdz51" else None,
+    )
+
+    resolved = wandb_run.resolve_gepa_wandb_run_id(
+        project="AgentLightning",
+        experiment_name="searchr1_qwen25_3b_gepa",
+        run_dir=tmp_path,
+        wandb_dir=wandb_dir,
+    )
+    assert resolved == "sq5hdz51"
+
+
 def test_install_gepa_wandb_grpo_compat_patch_mirrors_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("gepa")
     from gepa.logging.experiment_tracker import ExperimentTracker
@@ -85,10 +109,197 @@ def test_install_gepa_wandb_grpo_compat_patch_mirrors_metrics(monkeypatch: pytes
     wandb_run.install_gepa_wandb_grpo_compat_patch(reflection_minibatch_size=3)
 
     tracker = ExperimentTracker(use_wandb=True)
-    tracker.log_metrics({"best_valset_agg_score": 0.24, "subsample_score": 2.0}, step=42)
+    tracker.log_metrics({"val_program_average": 0.24, "subsample_score": 2.0}, step=42)
 
-    assert logged[0][0]["best_valset_agg_score"] == 0.24
+    assert logged[0][0]["val_program_average"] == 0.24
     assert logged[1][0]["val/reward"] == pytest.approx(0.24)
     assert logged[1][0]["val/em"] == pytest.approx(0.24)
-    assert logged[2][0]["training/reward"] == pytest.approx(2.0 / 3.0)
-    assert logged[2][0]["training/em"] == pytest.approx(2.0 / 3.0)
+    assert logged[1][0]["training/reward"] == pytest.approx(2.0 / 3.0)
+    assert logged[1][0]["training/em"] == pytest.approx(2.0 / 3.0)
+
+
+def test_install_gepa_wandb_grpo_compat_patch_maps_base_program_val(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("gepa")
+    from gepa.logging.experiment_tracker import ExperimentTracker
+
+    if hasattr(ExperimentTracker, "_agl_grpo_compat_patched"):
+        delattr(ExperimentTracker, "_agl_grpo_compat_patched")
+
+    logged: list[tuple[dict[str, Any], int | None]] = []
+
+    def fake_log_metrics(self: ExperimentTracker, metrics: dict[str, Any], step: int | None = None) -> None:
+        logged.append((metrics, step))
+
+    monkeypatch.setattr(ExperimentTracker, "log_metrics", fake_log_metrics)
+    wandb_run.install_gepa_wandb_grpo_compat_patch(reflection_minibatch_size=3)
+
+    tracker = ExperimentTracker(use_wandb=True)
+    tracker.log_metrics({"base_program_full_valset_score": 0.26}, step=1)
+
+    val_logs = [entry for entry, _ in logged if "val/em" in entry]
+    assert val_logs[-1]["val/em"] == pytest.approx(0.26)
+    assert val_logs[-1]["val/reward"] == pytest.approx(0.26)
+
+
+def test_install_gepa_wandb_grpo_compat_patch_prefers_per_step_val_over_pareto(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("gepa")
+    from gepa.logging.experiment_tracker import ExperimentTracker
+
+    if hasattr(ExperimentTracker, "_agl_grpo_compat_patched"):
+        delattr(ExperimentTracker, "_agl_grpo_compat_patched")
+
+    logged: list[tuple[dict[str, Any], int | None]] = []
+
+    def fake_log_metrics(self: ExperimentTracker, metrics: dict[str, Any], step: int | None = None) -> None:
+        logged.append((metrics, step))
+
+    monkeypatch.setattr(ExperimentTracker, "log_metrics", fake_log_metrics)
+    wandb_run.install_gepa_wandb_grpo_compat_patch(reflection_minibatch_size=3)
+
+    tracker = ExperimentTracker(use_wandb=True)
+    tracker.log_metrics(
+        {
+            "val_program_average": 0.22,
+            "valset_pareto_front_agg": 0.385,
+            "best_score_on_valset": 0.235,
+            "subsample_score": 1.0,
+        },
+        step=100,
+    )
+
+    val_em_logs = [entry for entry, _ in logged if "val/em" in entry]
+    assert val_em_logs[-1]["val/em"] == pytest.approx(0.22)
+    assert val_em_logs[-1]["val/reward"] == pytest.approx(0.22)
+    assert val_em_logs[-1]["val/pareto_front_agg"] == pytest.approx(0.385)
+    assert val_em_logs[-1]["val/best_single_program_em"] == pytest.approx(0.235)
+
+
+def test_ensure_gepa_rollouts_axis_defined_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    wandb_run._gepa_rollouts_axis_defined_run_ids.clear()
+    define_calls: list[tuple[str, ...]] = []
+
+    fake_run = MagicMock()
+    fake_run.id = "run_abc"
+
+    fake_wandb = MagicMock()
+    fake_wandb.run = fake_run
+
+    def fake_define_metric(name: str, **kwargs: object) -> None:
+        define_calls.append((name, *sorted(kwargs.items())))
+
+    fake_wandb.define_metric = fake_define_metric
+    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
+
+    wandb_run.ensure_gepa_rollouts_axis_defined()
+    wandb_run.ensure_gepa_rollouts_axis_defined()
+
+    assert define_calls == [
+        ("rollouts",),
+        ("*", ("step_metric", "rollouts")),
+    ]
+
+
+def test_log_gepa_wandb_metrics_stamps_rollouts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    wandb_run._gepa_rollouts_axis_defined_run_ids.clear()
+    logged: list[tuple[dict[str, float], int]] = []
+    define_calls: list[str] = []
+
+    fake_run = MagicMock()
+    fake_run.id = "gepa_run_rollouts"
+
+    fake_wandb = MagicMock()
+    fake_wandb.run = fake_run
+
+    def fake_init(**kwargs: object) -> None:
+        fake_wandb.run = fake_run
+
+    def fake_log(metrics: dict[str, float], *, step: int) -> None:
+        logged.append((metrics, step))
+
+    def fake_define_metric(name: str, **kwargs: object) -> None:
+        define_calls.append(name)
+
+    fake_wandb.init = fake_init
+    fake_wandb.log = fake_log
+    fake_wandb.define_metric = fake_define_metric
+    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
+
+    wandb_run.log_gepa_wandb_metrics(
+        {"val/em": 0.5, "total_metric_calls": 120},
+        step=3,
+        project="AgentLightning",
+        experiment_name="searchr1_gepa_test",
+        run_dir=tmp_path,
+    )
+
+    assert define_calls == ["rollouts", "*"]
+    assert logged[0][0]["rollouts"] == 120
+    assert logged[0][1] == 3
+
+
+def test_install_gepa_wandb_grpo_compat_patch_stamps_rollouts(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("gepa")
+    from gepa.logging.experiment_tracker import ExperimentTracker
+
+    wandb_run._gepa_rollouts_axis_defined_run_ids.clear()
+    if hasattr(ExperimentTracker, "_agl_grpo_compat_patched"):
+        delattr(ExperimentTracker, "_agl_grpo_compat_patched")
+
+    logged: list[tuple[dict[str, Any], int | None]] = []
+
+    def fake_log_metrics(self: ExperimentTracker, metrics: dict[str, Any], step: int | None = None) -> None:
+        logged.append((metrics, step))
+
+    monkeypatch.setattr(ExperimentTracker, "log_metrics", fake_log_metrics)
+    wandb_run.install_gepa_wandb_grpo_compat_patch(reflection_minibatch_size=3)
+
+    define_calls: list[str] = []
+
+    fake_run = MagicMock()
+    fake_run.id = "gepa_patch_rollouts"
+
+    fake_wandb = MagicMock()
+    fake_wandb.run = fake_run
+    fake_wandb.define_metric = lambda name, **kwargs: define_calls.append(name)
+    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
+
+    tracker = ExperimentTracker(use_wandb=True)
+    tracker.log_metrics(
+        {"val_program_average": 0.24, "subsample_score": 2.0, "total_metric_calls": 87},
+        step=42,
+    )
+
+    assert define_calls == ["rollouts", "*"]
+    assert logged[0][0]["rollouts"] == 87
+    assert logged[1][0]["rollouts"] == 87
+
+
+def test_install_gepa_wandb_grpo_compat_patch_historical_best_does_not_clobber_per_step_val(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("gepa")
+    from gepa.logging.experiment_tracker import ExperimentTracker
+
+    if hasattr(ExperimentTracker, "_agl_grpo_compat_patched"):
+        delattr(ExperimentTracker, "_agl_grpo_compat_patched")
+
+    logged: list[tuple[dict[str, Any], int | None]] = []
+
+    def fake_log_metrics(self: ExperimentTracker, metrics: dict[str, Any], step: int | None = None) -> None:
+        logged.append((metrics, step))
+
+    monkeypatch.setattr(ExperimentTracker, "log_metrics", fake_log_metrics)
+    wandb_run.install_gepa_wandb_grpo_compat_patch(reflection_minibatch_size=3)
+
+    tracker = ExperimentTracker(use_wandb=True)
+    tracker.log_metrics({"val_program_average": 0.22, "valset_pareto_front_agg": 0.385}, step=100)
+    tracker.log_metrics({"best_score_on_valset": 0.235}, step=100)
+
+    val_em_logs = [entry for entry, _ in logged if "val/em" in entry]
+    assert len(val_em_logs) == 1
+    assert val_em_logs[0]["val/em"] == pytest.approx(0.22)
+    assert val_em_logs[0]["val/pareto_front_agg"] == pytest.approx(0.385)
+
+    best_logs = [entry for entry, _ in logged if "val/best_single_program_em" in entry]
+    assert best_logs[-1]["val/best_single_program_em"] == pytest.approx(0.235)
+    assert "val/em" not in best_logs[-1]

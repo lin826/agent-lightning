@@ -1,8 +1,8 @@
 """Backfill GRPO-comparable WandB metrics onto a completed GEPA run.
 
 Appends ``val/reward``, ``val/em``, ``seed/val_em``, and optional per-iteration
-``val/reward`` derived from GEPA's ``best_valset_agg_score`` history. Does not
-rewind or delete existing WandB steps.
+``val/reward`` derived from GEPA's per-step ``val_program_average`` (mean val EM).
+Does not rewind or delete existing WandB steps.
 
 Usage:
     python scripts/backfill_gepa_wandb.py --run-id <wandb_run_id>
@@ -51,6 +51,7 @@ def main() -> None:
     best_val_em = float(summary["best_val_em"])
     best_train_em = float(summary.get("best_train_em_sample500", summary.get("best_train_em", 0.0)))
     total_metric_calls = int(summary["total_metric_calls"])
+    final_iteration = int(summary.get("final_iteration", 0))
 
     os.environ["WANDB_RUN_ID"] = args.run_id.strip()
     os.environ["WANDB_RESUME"] = "must"
@@ -70,6 +71,7 @@ def main() -> None:
     }
 
     iteration_metrics: list[tuple[int, dict[str, float]]] = []
+    rollout_metrics: list[tuple[int, dict[str, float]]] = []
     try:
         import wandb
         from wandb.apis.public import Api
@@ -77,11 +79,19 @@ def main() -> None:
         api = Api()
         entity = os.environ.get("WANDB_ENTITY", "ibm-bv")
         run = api.run(f"{entity}/{WANDB_PROJECT}/{args.run_id}")
-        history = run.history(keys=["best_valset_agg_score"], pandas=True)
-        if not history.empty and "best_valset_agg_score" in history.columns:
+        history = run.history(keys=["val_program_average", "base_program_full_valset_score"], pandas=True)
+        val_col = (
+            "val_program_average"
+            if "val_program_average" in history.columns
+            else "base_program_full_valset_score"
+        )
+        if not history.empty and val_col in history.columns:
             for _, row in history.iterrows():
                 step = int(row["_step"])
-                score = float(row["best_valset_agg_score"])
+                raw = row[val_col]
+                if raw != raw:  # NaN
+                    continue
+                score = float(raw)
                 iteration_metrics.append(
                     (
                         step,
@@ -91,14 +101,46 @@ def main() -> None:
                         },
                     )
                 )
+        for row in run.scan_history():
+            step = int(row.get("_step", 0))
+            calls = row.get("total_metric_calls")
+            if calls is None or calls != calls:
+                continue
+            rollout_metrics.append((step, {"rollouts": int(calls), "total_metric_calls": int(calls)}))
     except Exception as exc:
         logger.warning("Could not load iteration history from WandB API: %s", exc)
+
+    if final_iteration <= 0:
+        try:
+            from wandb.apis.public import Api
+
+            api = Api()
+            entity = os.environ.get("WANDB_ENTITY", "ibm-bv")
+            run = api.run(f"{entity}/{WANDB_PROJECT}/{args.run_id}")
+            iterations = [
+                int(row["iteration"])
+                for row in run.scan_history()
+                if row.get("iteration") is not None and int(row.get("iteration", 0)) > 0
+            ]
+            final_iteration = max(iterations) if iterations else 0
+        except Exception as exc:
+            logger.warning("Could not infer final_iteration from WandB history: %s", exc)
+            final_iteration = 0
+        if final_iteration <= 0:
+            final_iteration = total_metric_calls
 
     if args.dry_run:
         logger.info("Would log seed metrics at step 0: %s", seed_metrics)
         for step, metrics in iteration_metrics:
             logger.info("Would log iteration metrics at step %s: %s", step, metrics)
-        logger.info("Would log final metrics at step %s: %s", total_metric_calls, final_metrics)
+        for step, metrics in rollout_metrics:
+            logger.info("Would backfill rollouts at step %s: %s", step, metrics)
+        logger.info(
+            "Would log final metrics at step %s (rollouts=%s): %s",
+            final_iteration,
+            total_metric_calls,
+            final_metrics,
+        )
         logger.info("Would update run summary with final + seed metrics")
         return
 
@@ -142,9 +184,25 @@ def main() -> None:
             finish=True,
         )
 
+    for step, metrics in rollout_metrics:
+        log_gepa_wandb_metrics(
+            metrics,
+            step=step,
+            project=WANDB_PROJECT,
+            experiment_name=WANDB_EXPERIMENT,
+            run_dir=args.run_dir,
+            config={"backfill": True},
+            wandb_dir=_RECIPE_DIR / "wandb",
+            finish=True,
+        )
+
     log_gepa_wandb_metrics(
-        final_metrics,
-        step=total_metric_calls,
+        {
+            **final_metrics,
+            "total_metric_calls": total_metric_calls,
+            "iteration": final_iteration,
+        },
+        step=final_iteration,
         project=WANDB_PROJECT,
         experiment_name=WANDB_EXPERIMENT,
         run_dir=args.run_dir,
@@ -153,9 +211,11 @@ def main() -> None:
         finish=True,
     )
     logger.info(
-        "Backfilled run %s: seed step 0, %d iteration steps, final step %s",
+        "Backfilled run %s: seed step 0, %d iteration steps, %d rollout steps, final step %s (rollouts=%s)",
         args.run_id,
         len(iteration_metrics),
+        len(rollout_metrics),
+        final_iteration,
         total_metric_calls,
     )
 

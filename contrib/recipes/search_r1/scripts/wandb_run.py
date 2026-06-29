@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 WANDB_RUN_ID_FILENAME = "wandb_run_id.txt"
 WANDB_EVAL_RUN_ID_FILENAME = "wandb_eval_run_id.txt"
 
+_gepa_rollouts_axis_defined_run_ids: set[str] = set()
+
 
 def checkpoint_root_from_actor(actor_path: Path) -> Path:
     """Return the experiment checkpoint root from an actor path (``.../global_step_N/actor``)."""
@@ -248,6 +250,28 @@ def setup_wandb_resume(run_id: str, *, resume: str = "allow") -> None:
     os.environ["WANDB_RESUME"] = resume
 
 
+def resolve_gepa_wandb_run_id(
+    *,
+    project: str,
+    experiment_name: str,
+    run_dir: Path,
+    wandb_dir: Path | None = None,
+) -> str | None:
+    """Resolve a GEPA training run id from env, saved file, or local ``wandb/`` dirs."""
+    run_id = resolve_wandb_run_id(
+        run_dir=run_dir,
+        experiment_name=experiment_name,
+        wandb_dir=wandb_dir,
+    )
+    validated = validate_wandb_run_id(run_id, project=project, directory=run_dir, kind="train")
+    if validated:
+        return validated
+    if wandb_dir is None:
+        return None
+    local_id = find_wandb_run_id_from_local(wandb_dir, experiment_name)
+    return validate_wandb_run_id(local_id, project=project, directory=None, kind="train")
+
+
 def build_gepa_wandb_init_kwargs(
     *,
     project: str,
@@ -260,16 +284,54 @@ def build_gepa_wandb_init_kwargs(
     kwargs: dict[str, Any] = {"project": project, "name": name, "config": config}
     if os.environ.get("WANDB_ENTITY"):
         kwargs["entity"] = os.environ["WANDB_ENTITY"]
-    run_id = resolve_wandb_run_id(run_dir=run_dir)
-    run_id = validate_wandb_run_id(run_id, project=project, directory=run_dir, kind="train")
+    run_id = resolve_gepa_wandb_run_id(
+        project=project,
+        experiment_name=name,
+        run_dir=run_dir,
+        wandb_dir=wandb_dir,
+    )
     if run_id:
         kwargs["id"] = run_id
         kwargs["resume"] = "allow"
     return kwargs
 
 
+def ensure_gepa_rollouts_axis_defined() -> None:
+    """Register ``rollouts`` as a WandB step metric once per run (GRPO parity)."""
+    try:
+        import wandb
+    except ImportError:
+        return
+
+    run = getattr(wandb, "run", None)
+    if run is None:
+        return
+
+    run_id = run.id
+    if run_id in _gepa_rollouts_axis_defined_run_ids:
+        return
+
+    wandb.define_metric("rollouts")
+    wandb.define_metric("*", step_metric="rollouts")
+    _gepa_rollouts_axis_defined_run_ids.add(run_id)
+
+
+def stamp_gepa_rollouts_metric(metrics: dict[str, Any], *, step: int | None = None) -> None:
+    """Stamp cumulative rollout count for WandB's rollouts x-axis when missing."""
+    if "rollouts" in metrics:
+        return
+    if "total_metric_calls" in metrics:
+        metrics["rollouts"] = int(metrics["total_metric_calls"])
+    elif step is not None:
+        metrics["rollouts"] = int(step)
+
+
 def install_gepa_wandb_grpo_compat_patch(*, reflection_minibatch_size: int) -> None:
-    """Mirror GEPA val/train scores into GRPO-style ``val/reward`` and ``training/reward`` keys."""
+    """Mirror GEPA mean EM scores into GRPO-style ``val/reward`` and ``training/reward`` keys.
+
+    GEPA adapter scores are per-example EM (0/1); ``val_program_average`` and
+    ``subsample_score`` / ``new_subsample_score`` are sums or means over those scores.
+    """
     from gepa.logging.experiment_tracker import ExperimentTracker
 
     if getattr(ExperimentTracker, "_agl_grpo_compat_patched", False):
@@ -279,16 +341,32 @@ def install_gepa_wandb_grpo_compat_patch(*, reflection_minibatch_size: int) -> N
     minibatch_size = max(1, reflection_minibatch_size)
 
     def log_metrics(self: ExperimentTracker, metrics: dict[str, Any], step: int | None = None) -> None:
+        if self.use_wandb and step is not None:
+            ensure_gepa_rollouts_axis_defined()
+            stamp_gepa_rollouts_metric(metrics, step=step)
+
         original_log_metrics(self, metrics, step=step)
         if not self.use_wandb or step is None:
             return
 
         extra: dict[str, float] = {}
-        for key in ("best_valset_agg_score", "best_score_on_valset", "base_program_full_valset_score"):
+        # Per-step validation signal: mean EM of the program evaluated on valset this iteration
+        # (new candidate after acceptance, or the base seed at iteration 1).
+        if "val_program_average" in metrics:
+            val_mean = float(metrics["val_program_average"])
+            extra["val/reward"] = val_mean
+            extra["val/em"] = val_mean
+        elif "base_program_full_valset_score" in metrics:
+            val_mean = float(metrics["base_program_full_valset_score"])
+            extra["val/reward"] = val_mean
+            extra["val/em"] = val_mean
+
+        # Historical / monitoring metrics — keep separate from per-step val/reward.
+        if "valset_pareto_front_agg" in metrics:
+            extra["val/pareto_front_agg"] = float(metrics["valset_pareto_front_agg"])
+        for key in ("best_valset_agg_score", "best_score_on_valset"):
             if key in metrics:
-                score = float(metrics[key])
-                extra["val/reward"] = score
-                extra["val/em"] = score
+                extra["val/best_single_program_em"] = float(metrics[key])
                 break
 
         if "subsample_score" in metrics:
@@ -301,6 +379,7 @@ def install_gepa_wandb_grpo_compat_patch(*, reflection_minibatch_size: int) -> N
             extra["training/em"] = train_mean
 
         if extra:
+            extra["rollouts"] = int(metrics.get("total_metric_calls", step))
             original_log_metrics(self, extra, step=step)
 
     ExperimentTracker.log_metrics = log_metrics  # type: ignore[method-assign]
@@ -338,6 +417,8 @@ def log_gepa_wandb_metrics(
         wandb.init(**init_kwargs)
 
     assert wandb.run is not None
+    ensure_gepa_rollouts_axis_defined()
+    stamp_gepa_rollouts_metric(metrics, step=step)
     wandb.log(metrics, step=step)
     save_wandb_run_id(run_dir, wandb.run.id)
     if finish:
