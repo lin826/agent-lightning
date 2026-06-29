@@ -213,7 +213,7 @@ def test_ensure_gepa_wandb_rollouts_axis_defined_only_once(monkeypatch: pytest.M
     wandb_run.ensure_gepa_wandb_rollouts_axis_defined()
     wandb_run.ensure_gepa_wandb_rollouts_axis_defined()
 
-    expected = [("rollouts", ("summary", "max")), ("iteration", ("summary", "max"))]
+    expected = [("rollouts", ("summary", "max")), ("Step", ("summary", "max"))]
     expected.extend((metric, ("step_metric", "rollouts")) for metric in wandb_run.GEPA_ROLLOUT_AXIS_METRICS)
     assert define_calls == expected
     assert not any(name.endswith("@rollouts") for name, *_ in define_calls)
@@ -256,11 +256,11 @@ def test_log_gepa_wandb_metrics_logs_on_rollouts_axis(monkeypatch: pytest.Monkey
     )
 
     assert "rollouts" in define_calls
-    assert "iteration" in define_calls
+    assert "Step" in define_calls
     assert "val/em" in define_calls
     assert not any(name.endswith("@rollouts") for name in define_calls)
     assert logged[0]["rollouts"] == 120
-    assert logged[0]["iteration"] == 3
+    assert logged[0]["Step"] == 3
     assert logged[0]["val/em"] == 0.5
     assert "val/em@rollouts" not in logged[0]
 
@@ -296,12 +296,12 @@ def test_install_gepa_wandb_grpo_compat_patch_logs_grpo_metrics(monkeypatch: pyt
     )
 
     assert logged[0][0]["rollouts"] == 87
-    assert logged[0][0]["iteration"] == 42
+    assert logged[0][0]["Step"] == 42
     compat_payload = rollout_logs[0]
     assert compat_payload["val/reward"] == pytest.approx(0.24)
     assert compat_payload["training/reward"] == pytest.approx(2.0 / 3.0)
     assert compat_payload["rollouts"] == 87
-    assert compat_payload["iteration"] == 42
+    assert compat_payload["Step"] == 42
     assert compat_payload["total_metric_calls"] == 87
     assert "val/reward@rollouts" not in compat_payload
 

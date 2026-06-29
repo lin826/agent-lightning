@@ -385,7 +385,7 @@ def main() -> None:
     prompt_path = args.run_dir / "best_instruction_prompt.txt"
     prompt_path.write_text(best_candidate[INSTRUCTION_COMPONENT])
 
-    # Final summary on the rollout-budget x-axis; iteration kept as a reference field.
+    # Final summary on the rollout-budget x-axis; Step kept as a reference field.
     log_gepa_wandb_metrics(
         {
             "val/em": best_val_em,
@@ -395,7 +395,6 @@ def main() -> None:
             "training/em": best_train_em,
             "seed/val_em": seed_val_em,
             "total_metric_calls": final_rollouts,
-            "iteration": final_iteration,
         },
         rollouts=final_rollouts,
         iteration=final_iteration,

@@ -214,7 +214,6 @@ def main() -> None:
                 "test/em": test_em,
                 "test/reward": test_em,
                 "total_metric_calls": args.metric_calls,
-                "iteration": train_iteration,
             },
             rollouts=args.metric_calls,
             iteration=train_iteration,

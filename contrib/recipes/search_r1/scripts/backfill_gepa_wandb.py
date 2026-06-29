@@ -24,7 +24,7 @@ for _path in (_RECIPE_DIR, _SCRIPTS_DIR):
         sys.path.insert(0, str(_path))
 
 from search_r1_gepa.train_gepa import WANDB_EXPERIMENT, WANDB_PROJECT  # noqa: E402
-from wandb_run import log_gepa_wandb_metrics  # noqa: E402
+from wandb_run import gepa_step_from_wandb_row, log_gepa_wandb_metrics  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -89,7 +89,7 @@ def main() -> None:
         )
         if not history.empty and val_col in history.columns:
             for _, row in history.iterrows():
-                iteration = int(row.get("iteration", row["_step"]))
+                iteration = gepa_step_from_wandb_row(row) or int(row["_step"])
                 rollouts_raw = row.get("rollouts", row.get("total_metric_calls"))
                 if rollouts_raw != rollouts_raw:  # NaN
                     rollouts = iteration
@@ -120,9 +120,9 @@ def main() -> None:
             entity = os.environ.get("WANDB_ENTITY", "ibm-bv")
             run = api.run(f"{entity}/{WANDB_PROJECT}/{args.run_id}")
             iterations = [
-                int(row["iteration"])
+                step
                 for row in run.scan_history()
-                if row.get("iteration") is not None and int(row.get("iteration", 0)) > 0
+                if (step := gepa_step_from_wandb_row(row)) is not None and step > 0
             ]
             final_iteration = max(iterations) if iterations else 0
         except Exception as exc:
@@ -190,7 +190,6 @@ def main() -> None:
         {
             **final_metrics,
             "total_metric_calls": total_metric_calls,
-            "iteration": final_iteration,
         },
         rollouts=total_metric_calls,
         iteration=final_iteration,

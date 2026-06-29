@@ -35,7 +35,12 @@ _RECIPE_DIR = _SCRIPTS_DIR.parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from wandb_run import ensure_gepa_wandb_rollouts_axis_defined, save_wandb_run_id  # noqa: E402
+from wandb_run import (  # noqa: E402
+    GEPA_ITERATION_STEP_METRIC,
+    ensure_gepa_wandb_rollouts_axis_defined,
+    gepa_step_from_wandb_row,
+    save_wandb_run_id,
+)
 
 DEFAULT_ENTITY = "ibm-bv"
 DEFAULT_PROJECT = "AgentLightning"
@@ -121,7 +126,7 @@ def fork_gepa_run(
     for row in all_rows:
         rollouts = _rollouts_from_row(row)
         if rollouts is None:
-            rollouts = int(row.get("iteration", row["_step"]))
+            rollouts = gepa_step_from_wandb_row(row) or int(row["_step"])
         if rollouts <= max_rollouts:
             clipped.append(row)
         else:
@@ -142,18 +147,19 @@ def fork_gepa_run(
     for row in clipped:
         rollouts = _rollouts_from_row(row)
         if rollouts is None:
-            rollouts = int(row.get("iteration", row["_step"]))
+            rollouts = gepa_step_from_wandb_row(row) or int(row["_step"])
         payload = _payload_from_row(row)
+        payload.pop("iteration", None)
         payload["rollouts"] = rollouts
-        if "iteration" not in payload:
-            iteration = row.get("iteration", row["_step"])
-            if iteration is not None:
-                payload["iteration"] = int(iteration)
+        if GEPA_ITERATION_STEP_METRIC not in payload:
+            step = gepa_step_from_wandb_row(row)
+            if step is not None:
+                payload[GEPA_ITERATION_STEP_METRIC] = step
         merged[rollouts] = payload
         logger.info(
-            "  keep rollouts=%s iteration=%s val/em=%s",
+            "  keep rollouts=%s Step=%s val/em=%s",
             rollouts,
-            payload.get("iteration"),
+            payload.get(GEPA_ITERATION_STEP_METRIC),
             payload.get("val/em"),
         )
 
@@ -196,7 +202,7 @@ def fork_gepa_run(
         "training/reward",
         "seed/val_em",
         "total_metric_calls",
-        "iteration",
+        GEPA_ITERATION_STEP_METRIC,
         "val_program_average",
         "best_valset_agg_score",
         "best_score_on_valset",

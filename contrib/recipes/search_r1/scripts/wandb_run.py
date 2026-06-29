@@ -29,7 +29,8 @@ GEPA_EVAL_WANDB_RUN_NAMES: dict[str, str] = {
 }
 
 GEPA_ROLLOUT_STEP_METRIC = "rollouts"
-GEPA_ITERATION_STEP_METRIC = "iteration"
+GEPA_ITERATION_STEP_METRIC = "Step"
+GEPA_ITERATION_LEGACY_METRIC = "iteration"
 
 # Chart metrics plotted against cumulative metric calls (``rollouts``), not GEPA iteration.
 GEPA_ROLLOUT_AXIS_METRICS: tuple[str, ...] = (
@@ -397,12 +398,23 @@ def ensure_gepa_wandb_rollouts_axis_defined() -> None:
     _gepa_wandb_rollouts_axis_defined_run_ids.add(run_id)
 
 
+def gepa_step_from_wandb_row(row: dict[str, Any]) -> int | None:
+    """Read GEPA step from a WandB history row (``Step`` or legacy ``iteration``)."""
+    for key in (GEPA_ITERATION_STEP_METRIC, GEPA_ITERATION_LEGACY_METRIC):
+        raw = row.get(key)
+        if raw is not None:
+            return int(raw)
+    step = row.get("_step")
+    return int(step) if step is not None else None
+
+
 def stamp_gepa_rollout_fields(metrics: dict[str, Any], *, iteration: int | None = None) -> None:
-    """Stamp ``rollouts`` and ``iteration`` fields for rollout-budget WandB charts."""
+    """Stamp ``rollouts`` and ``Step`` fields for rollout-budget WandB charts."""
     if iteration is not None:
         metrics[GEPA_ITERATION_STEP_METRIC] = int(iteration)
-    elif GEPA_ITERATION_STEP_METRIC not in metrics and "iteration" in metrics:
-        metrics[GEPA_ITERATION_STEP_METRIC] = int(metrics["iteration"])
+    elif GEPA_ITERATION_STEP_METRIC not in metrics and GEPA_ITERATION_LEGACY_METRIC in metrics:
+        metrics[GEPA_ITERATION_STEP_METRIC] = int(metrics[GEPA_ITERATION_LEGACY_METRIC])
+    metrics.pop(GEPA_ITERATION_LEGACY_METRIC, None)
 
     if GEPA_ROLLOUT_STEP_METRIC in metrics:
         return
@@ -413,7 +425,7 @@ def stamp_gepa_rollout_fields(metrics: dict[str, Any], *, iteration: int | None 
 
 
 def prepare_gepa_wandb_payload(metrics: dict[str, Any], *, iteration: int | None = None) -> dict[str, Any]:
-    """Return a WandB payload with ``rollouts`` / ``iteration`` fields for chart x-axis."""
+    """Return a WandB payload with ``rollouts`` / ``Step`` fields for chart x-axis."""
     payload = dict(metrics)
     stamp_gepa_rollout_fields(payload, iteration=iteration)
     return payload
@@ -447,7 +459,7 @@ def resolve_gepa_iteration_for_metric_calls(
     """Map a rollout budget (``metric_calls``) to the GEPA iteration for reference logging.
 
     Full-test eval logs ``test/reward`` on the training run at ``rollouts=metric_calls``
-    while stamping ``iteration`` from this map when available.
+    while stamping ``Step`` from this map when available.
     """
     if metric_calls <= 0:
         return 0
@@ -469,13 +481,15 @@ def resolve_gepa_iteration_for_metric_calls(
 
             entity = os.environ.get("WANDB_ENTITY", "ibm-bv")
             run = Api().run(f"{entity}/{project}/{run_id}")
-            for row in run.scan_history(keys=["rollouts", "total_metric_calls", "iteration", "_step"]):
+            for row in run.scan_history(
+                keys=["rollouts", "total_metric_calls", GEPA_ITERATION_STEP_METRIC, GEPA_ITERATION_LEGACY_METRIC, "_step"]
+            ):
                 rollouts = row.get("rollouts", row.get("total_metric_calls"))
                 if rollouts is None or int(rollouts) != metric_calls:
                     continue
-                iteration = row.get("iteration", row.get("_step"))
-                if iteration is not None:
-                    return int(iteration)
+                step = gepa_step_from_wandb_row(row)
+                if step is not None:
+                    return step
         except Exception as exc:
             logger.debug("Could not resolve iteration for metric_calls=%s from WandB API: %s", metric_calls, exc)
 
