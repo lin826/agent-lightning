@@ -34,12 +34,14 @@ def test_default_seed_candidate_rewrite_uses_rewrite_instruction() -> None:
     candidate = default_seed_candidate(use_rewrite=True)
     assert candidate[INSTRUCTION_COMPONENT] == INSTRUCTION_FORMAT_REWRITE
     assert "<rewrite>" in candidate[INSTRUCTION_COMPONENT]
+    assert "MUST" in candidate[INSTRUCTION_COMPONENT]
 
 
 def test_default_seed_candidate_baseline_uses_standard_instruction() -> None:
     candidate = default_seed_candidate(use_rewrite=False)
     assert candidate[INSTRUCTION_COMPONENT] == INSTRUCTION_FORMAT
     assert "<rewrite>" not in candidate[INSTRUCTION_COMPONENT]
+    assert "Good:" in candidate[INSTRUCTION_COMPONENT]
 
 
 def test_resolve_gepa_variant_rewrite() -> None:

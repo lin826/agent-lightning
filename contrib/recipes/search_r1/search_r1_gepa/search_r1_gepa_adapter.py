@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -69,6 +70,52 @@ def _format_golden_answers(golden_answers: list[str]) -> str:
     return ", ".join(golden_answers)
 
 
+_REFUSAL_RE = re.compile(
+    r"\b(sorry|cannot|can't|can not|don't know|do not know|unable to|i am not|i'm not|no answer|not sure)\b",
+    re.IGNORECASE,
+)
+
+_FAILURE_CATEGORY_HINTS: dict[str, str] = {
+    "no_answer_tag": (
+        "The rollout never contained a valid <answer>...</answer> tag. "
+        "Require the model to always end with a concise <answer>."
+    ),
+    "verbose_answer": (
+        "The <answer> tag contained a full sentence or explanation instead of the shortest exact entity/phrase."
+    ),
+    "refusal": "The <answer> tag contained a refusal or hedge instead of the factual answer.",
+    "wrong_entity": "The <answer> tag had the correct format but the entity/phrase did not match any gold answer.",
+}
+
+
+def _looks_like_verbose_answer(answer: str) -> bool:
+    stripped = answer.strip()
+    if not stripped:
+        return False
+    if stripped.endswith((".", "!", "?")):
+        return True
+    if len(stripped.split()) > 6:
+        return True
+    lower = f" {stripped.lower()} "
+    return any(phrase in lower for phrase in (" is ", " are ", " was ", " the ", " a ", " an "))
+
+
+def classify_failure_category(
+    extracted: str | None,
+    rollout_content: str,
+    golden_answers: list[str],
+) -> str | None:
+    """Classify EM failures for GEPA reflection feedback."""
+    del golden_answers
+    if extracted is None:
+        return "no_answer_tag"
+    if _REFUSAL_RE.search(extracted):
+        return "refusal"
+    if _looks_like_verbose_answer(extracted):
+        return "verbose_answer"
+    return "wrong_entity"
+
+
 def _build_feedback(question: str, golden_answers: list[str], rollout_content: str, em_score: float) -> str:
     extracted = extract_solution(rollout_content)
     gold_str = _format_golden_answers(golden_answers)
@@ -76,14 +123,17 @@ def _build_feedback(question: str, golden_answers: list[str], rollout_content: s
         return (
             f"The model answered correctly with EM=1. Question: {question!r}. "
             f"Extracted answer: {extracted!r}. Expected: {gold_str!r}. "
-            "The instruction prompt successfully guided search-then-answer behavior."
+            "The instruction prompt successfully guided search-then-answer behavior with a concise <answer> tag."
         )
+
+    category = classify_failure_category(extracted, rollout_content, golden_answers)
+    hint = _FAILURE_CATEGORY_HINTS[category or "wrong_entity"]
+    extracted_repr = extracted if extracted is not None else "(none)"
     return (
-        f"The model answered incorrectly with EM=0. Question: {question!r}. "
-        f"Extracted answer: {extracted!r}. Expected one of: {gold_str!r}. "
-        f"Full rollout (truncated): {rollout_content[:2000]!r}. "
-        "Improve the instruction so the model searches relevant queries and puts the "
-        "final answer inside <answer>...</answer> tags."
+        f"The model answered incorrectly with EM=0. Failure category: {category}. Question: {question!r}. "
+        f"Extracted answer: {extracted_repr!r}. Expected one of: {gold_str!r}. "
+        f"Diagnosis: {hint} "
+        f"Rollout excerpt: {rollout_content[:1500]!r}."
     )
 
 

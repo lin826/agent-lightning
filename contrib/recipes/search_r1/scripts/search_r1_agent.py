@@ -19,7 +19,12 @@ setup_logging()
 logger = configure_logger(name=__name__)
 
 # Copied and adapted from https://github.com/PeterGriffinJin/Search-R1/blob/main/scripts/data_process/nq_search.py
-INSTRUCTION_FORMAT = """Answer the given question. You must conduct reasoning inside <think> and </think> first every time you get new information. After reasoning, if you find you lack some knowledge, you can call a search engine by <search> query </search> and it will return the top searched results between <information> and </information>. You can search as many times as your want. If you find no further external knowledge needed, you can directly provide the answer inside <answer> and </answer>, without detailed illustrations. For example, <answer> Beijing </answer>. Question: """
+INSTRUCTION_FORMAT = """Answer the given question. Conduct reasoning inside <think> and </think> when you get new information. Search with <search> query </search>; results appear in <information> and </information>. Search as needed.
+
+You MUST end with <answer> and </answer> containing only the shortest exact answer—no sentences, explanations, honorifics, or refusals.
+Good: <answer>Beijing</answer>, <answer>1945</answer>. Bad: <answer>The capital is Beijing.</answer>, <answer>Sorry, I cannot answer.</answer>.
+
+Question: """
 
 
 
@@ -405,9 +410,10 @@ class SearchR1Agent(LitAgent[Dict[str, Any]]):
 
 INSTRUCTION_FORMAT_REWRITE = """You will answer a question using search.
 
-First, rewrite the question to make it clearer and easier to search for. Put your rewritten question inside <rewrite> and </rewrite> tags. For multi-hop questions, decompose into sub-questions.
+First, rewrite the question inside <rewrite> and </rewrite>. For multi-hop questions, decompose into sub-questions.
 
-Then conduct reasoning inside <think> and </think> every time you get new information. Search by writing <search> query </search>. When ready, answer inside <answer> and </answer>, without detailed illustrations. For example, <answer> Beijing </answer>.
+Then reason in <think> and </think>, search with <search> query </search>, and when done you MUST answer in <answer> and </answer> with only the shortest exact entity/phrase—no sentences, honorifics, or refusals.
+Good: <answer>Beijing</answer>. Bad: <answer>The capital is Beijing.</answer>, <answer>I don't know.</answer>.
 
 Question: """
 
