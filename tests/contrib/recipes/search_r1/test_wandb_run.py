@@ -112,6 +112,21 @@ def test_resolve_gepa_wandb_run_id_falls_back_to_local_wandb(
     assert resolved == "sq5hdz51"
 
 
+def test_subsample_train_means_supports_legacy_and_current_keys() -> None:
+    metrics = {
+        "subsample_score": 2.0,
+        "new_subsample_score": 3.0,
+        "subsample/before": 1.0,
+        "subsample/after": 4.0,
+    }
+    assert wandb_run.subsample_train_means(metrics, minibatch_size=3) == [
+        pytest.approx(2.0 / 3.0),
+        pytest.approx(1.0),
+        pytest.approx(1.0 / 3.0),
+        pytest.approx(4.0 / 3.0),
+    ]
+
+
 def test_install_gepa_wandb_grpo_compat_patch_mirrors_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("gepa")
     from gepa.logging.experiment_tracker import ExperimentTracker
@@ -132,10 +147,11 @@ def test_install_gepa_wandb_grpo_compat_patch_mirrors_metrics(monkeypatch: pytes
     tracker.log_metrics({"val_program_average": 0.24, "subsample_score": 2.0}, step=42)
 
     assert logged[0][0]["val_program_average"] == 0.24
-    assert logged[1][0]["val/reward"] == pytest.approx(0.24)
-    assert logged[1][0]["val/em"] == pytest.approx(0.24)
-    assert logged[1][0]["training/reward"] == pytest.approx(2.0 / 3.0)
-    assert logged[1][0]["training/em"] == pytest.approx(2.0 / 3.0)
+    val_logs = [entry for entry, _ in logged if "val/em" in entry]
+    assert val_logs[-1]["val/reward"] == pytest.approx(0.24)
+    assert val_logs[-1]["val/em"] == pytest.approx(0.24)
+    assert val_logs[-1]["training/reward"] == pytest.approx(2.0 / 3.0)
+    assert val_logs[-1]["training/em"] == pytest.approx(2.0 / 3.0)
 
 
 def test_install_gepa_wandb_grpo_compat_patch_maps_base_program_val(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -192,6 +208,7 @@ def test_install_gepa_wandb_grpo_compat_patch_prefers_per_step_val_over_pareto(m
     assert val_em_logs[-1]["val/reward"] == pytest.approx(0.22)
     assert val_em_logs[-1]["val/pareto_front_agg"] == pytest.approx(0.385)
     assert val_em_logs[-1]["val/best_single_program_em"] == pytest.approx(0.235)
+    assert val_em_logs[-1]["training/reward"] == pytest.approx(1.0 / 3.0)
 
 
 def test_ensure_gepa_wandb_rollouts_axis_defined_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -290,13 +307,15 @@ def test_install_gepa_wandb_grpo_compat_patch_logs_grpo_metrics(monkeypatch: pyt
     wandb_run.install_gepa_wandb_grpo_compat_patch(reflection_minibatch_size=3)
 
     tracker = ExperimentTracker(use_wandb=True)
+    tracker.log_metrics({"subsample_score": 1.0, "total_metric_calls": 40}, step=42)
     tracker.log_metrics(
         {"val_program_average": 0.24, "subsample_score": 2.0, "total_metric_calls": 87},
         step=42,
     )
 
-    assert logged[0][0]["rollouts"] == 87
-    assert logged[0][0]["Step"] == 42
+    assert logged[0][0]["rollouts"] == 40
+    assert logged[1][0]["rollouts"] == 87
+    assert logged[1][0]["Step"] == 42
     compat_payload = rollout_logs[0]
     assert compat_payload["val/reward"] == pytest.approx(0.24)
     assert compat_payload["training/reward"] == pytest.approx(2.0 / 3.0)
@@ -306,6 +325,64 @@ def test_install_gepa_wandb_grpo_compat_patch_logs_grpo_metrics(monkeypatch: pyt
     assert "val/reward@rollouts" not in compat_payload
 
     wandb_run._gepa_wandb_rollouts_axis_defined_run_ids.clear()
+
+
+def test_install_gepa_wandb_grpo_compat_patch_buffers_subsample_until_iteration_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("gepa")
+    from gepa.logging.experiment_tracker import ExperimentTracker
+
+    if hasattr(ExperimentTracker, "_agl_grpo_compat_patched"):
+        delattr(ExperimentTracker, "_agl_grpo_compat_patched")
+
+    logged: list[tuple[dict[str, Any], int | None]] = []
+
+    def fake_log_metrics(self: ExperimentTracker, metrics: dict[str, Any], step: int | None = None) -> None:
+        logged.append((metrics, step))
+
+    monkeypatch.setattr(ExperimentTracker, "log_metrics", fake_log_metrics)
+    wandb_run.install_gepa_wandb_grpo_compat_patch(reflection_minibatch_size=3)
+
+    tracker = ExperimentTracker(use_wandb=True)
+    tracker.log_metrics({"subsample_score": 1.0}, step=5)
+    tracker.log_metrics({"new_subsample_score": 3.0}, step=5)
+
+    train_logs = [entry for entry, _ in logged if "training/reward" in entry]
+    assert train_logs == []
+
+    tracker.log_metrics({"val_program_average": 0.2}, step=5)
+    train_logs = [entry for entry, _ in logged if "training/reward" in entry]
+    assert len(train_logs) == 1
+    assert train_logs[0]["training/reward"] == pytest.approx(1.0)
+    assert train_logs[0]["val/reward"] == pytest.approx(0.2)
+
+
+def test_install_gepa_wandb_grpo_compat_patch_flushes_stale_training_on_step_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("gepa")
+    from gepa.logging.experiment_tracker import ExperimentTracker
+
+    if hasattr(ExperimentTracker, "_agl_grpo_compat_patched"):
+        delattr(ExperimentTracker, "_agl_grpo_compat_patched")
+
+    logged: list[tuple[dict[str, Any], int | None]] = []
+
+    def fake_log_metrics(self: ExperimentTracker, metrics: dict[str, Any], step: int | None = None) -> None:
+        logged.append((metrics, step))
+
+    monkeypatch.setattr(ExperimentTracker, "log_metrics", fake_log_metrics)
+    wandb_run.install_gepa_wandb_grpo_compat_patch(reflection_minibatch_size=3)
+
+    tracker = ExperimentTracker(use_wandb=True)
+    tracker.log_metrics({"subsample/before": 1.0, "subsample/after": 2.0}, step=4)
+    tracker.log_metrics({"selected_program_candidate": 1}, step=5)
+
+    train_logs = [entry for entry, _ in logged if "training/reward" in entry]
+    assert len(train_logs) == 1
+    assert train_logs[0]["training/reward"] == pytest.approx(2.0 / 3.0)
+    assert "val/reward" not in train_logs[0]
 
 
 def test_install_gepa_wandb_grpo_compat_patch_historical_best_does_not_clobber_per_step_val(

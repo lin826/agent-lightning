@@ -47,7 +47,21 @@ GEPA_ROLLOUT_AXIS_METRICS: tuple[str, ...] = (
     "test/em",
 )
 
+# GEPA subsample keys: legacy sums and current reflective-mutation names.
+GEPA_SUBSAMPLE_SCORE_KEYS: tuple[str, ...] = (
+    "subsample_score",
+    "new_subsample_score",
+    "subsample/before",
+    "subsample/after",
+)
+
 _gepa_wandb_rollouts_axis_defined_run_ids: set[str] = set()
+
+
+def subsample_train_means(metrics: dict[str, Any], *, minibatch_size: int) -> list[float]:
+    """Return per-minibatch mean training scores from GEPA subsample metric keys."""
+    size = max(1, minibatch_size)
+    return [float(metrics[key]) / size for key in GEPA_SUBSAMPLE_SCORE_KEYS if key in metrics]
 
 
 def resolve_eval_wandb_run_name(config_key: str) -> str:
@@ -526,7 +540,9 @@ def install_gepa_wandb_grpo_compat_patch(
     """Mirror GEPA mean EM scores into GRPO-style ``val/reward`` and ``training/reward`` keys.
 
     GEPA adapter scores are per-example EM (0/1); ``val_program_average`` and
-    ``subsample_score`` / ``new_subsample_score`` are sums or means over those scores.
+    subsample sums (``subsample_score``, ``new_subsample_score``, ``subsample/before``,
+    ``subsample/after``) are aggregated over the reflection minibatch. ``training/reward``
+    is logged once per GEPA iteration as the max minibatch mean seen that iteration.
 
     When ``run_dir`` is set, a new dev-subset historical best
     (``best_score_on_valset`` / ``best_valset_agg_score``) also submits full-test eval
@@ -544,6 +560,71 @@ def install_gepa_wandb_grpo_compat_patch(
         "best_valset_agg_score",
         "base_program_full_valset_score",
     )
+    train_reward_buffer: dict[int, float] = {}
+    train_em_buffer: dict[int, float] = {}
+    train_rollouts_buffer: dict[int, int] = {}
+
+    def _resolve_training_em(train_mean: float) -> float:
+        if reward_mode != "shaped":
+            return train_mean
+        try:
+            from search_r1_gepa.search_r1_gepa_adapter import get_last_eval_em_mean
+
+            em_mean = get_last_eval_em_mean()
+        except (ImportError, ModuleNotFoundError):
+            em_mean = None
+        return em_mean if em_mean is not None else train_mean
+
+    def _record_subsample_training(step: int, metrics: dict[str, Any]) -> None:
+        train_means = subsample_train_means(metrics, minibatch_size=minibatch_size)
+        if not train_means:
+            return
+        train_reward_buffer[step] = max(train_reward_buffer.get(step, float("-inf")), *train_means)
+        em_candidates = [_resolve_training_em(mean) for mean in train_means]
+        train_em_buffer[step] = max(train_em_buffer.get(step, float("-inf")), *em_candidates)
+        if "total_metric_calls" in metrics:
+            train_rollouts_buffer[step] = int(metrics["total_metric_calls"])
+
+    def _pop_buffered_training(step: int) -> dict[str, float | int]:
+        reward = train_reward_buffer.pop(step, None)
+        if reward is None:
+            return {}
+        em = train_em_buffer.pop(step, reward)
+        payload: dict[str, float | int] = {
+            "training/reward": reward,
+            "training/em": em,
+        }
+        rollouts = train_rollouts_buffer.pop(step, None)
+        if rollouts is not None:
+            payload["total_metric_calls"] = rollouts
+        return payload
+
+    def _emit_grpo_compat_payload(
+        tracker_self: ExperimentTracker,
+        extra: dict[str, float | int],
+        *,
+        step: int,
+        metrics: dict[str, Any],
+    ) -> None:
+        if not extra:
+            return
+        if "total_metric_calls" in metrics and "total_metric_calls" not in extra:
+            extra["total_metric_calls"] = int(metrics["total_metric_calls"])
+        if "total_metric_calls" in extra or GEPA_ROLLOUT_STEP_METRIC in metrics:
+            ensure_gepa_wandb_rollouts_axis_defined()
+            payload = prepare_gepa_wandb_payload(extra, iteration=step)
+            try:
+                import wandb
+
+                if wandb.run is not None:
+                    wandb.log(payload)
+                    return
+            except ImportError:
+                original_log_metrics(tracker_self, payload, step=None)
+                return
+            original_log_metrics(tracker_self, payload, step=None)
+        else:
+            original_log_metrics(tracker_self, extra, step=step)
 
     def log_metrics(self: ExperimentTracker, metrics: dict[str, Any], step: int | None = None) -> None:
         if self.use_wandb and step is not None and "total_metric_calls" in metrics:
@@ -553,6 +634,14 @@ def install_gepa_wandb_grpo_compat_patch(
         original_log_metrics(self, metrics, step=step)
         if not self.use_wandb or step is None:
             return
+
+        stale_steps = sorted(s for s in train_reward_buffer if s < step)
+        for stale_step in stale_steps:
+            _emit_grpo_compat_payload(
+                self, _pop_buffered_training(stale_step), step=stale_step, metrics=metrics
+            )
+
+        _record_subsample_training(step, metrics)
 
         extra: dict[str, float | int] = {}
         # Per-step validation signal: mean EM of the program evaluated on valset this iteration
@@ -574,48 +663,12 @@ def install_gepa_wandb_grpo_compat_patch(
                 extra["val/best_single_program_em"] = float(metrics[key])
                 break
 
-        if "subsample_score" in metrics:
-            train_mean = float(metrics["subsample_score"]) / minibatch_size
-            extra["training/reward"] = train_mean
-            if reward_mode == "shaped":
-                try:
-                    from search_r1_gepa.search_r1_gepa_adapter import get_last_eval_em_mean
-
-                    em_mean = get_last_eval_em_mean()
-                except (ImportError, ModuleNotFoundError):
-                    em_mean = None
-                extra["training/em"] = em_mean if em_mean is not None else train_mean
-            else:
-                extra["training/em"] = train_mean
-        elif "new_subsample_score" in metrics:
-            train_mean = float(metrics["new_subsample_score"]) / minibatch_size
-            extra["training/reward"] = train_mean
-            if reward_mode == "shaped":
-                try:
-                    from search_r1_gepa.search_r1_gepa_adapter import get_last_eval_em_mean
-
-                    em_mean = get_last_eval_em_mean()
-                except (ImportError, ModuleNotFoundError):
-                    em_mean = None
-                extra["training/em"] = em_mean if em_mean is not None else train_mean
-            else:
-                extra["training/em"] = train_mean
+        iteration_complete = "val_program_average" in metrics or "base_program_full_valset_score" in metrics
+        if iteration_complete:
+            extra.update(_pop_buffered_training(step))
 
         if extra:
-            if "total_metric_calls" in metrics:
-                extra["total_metric_calls"] = int(metrics["total_metric_calls"])
-            if "total_metric_calls" in metrics or GEPA_ROLLOUT_STEP_METRIC in metrics:
-                ensure_gepa_wandb_rollouts_axis_defined()
-                payload = prepare_gepa_wandb_payload(extra, iteration=step)
-                try:
-                    import wandb
-
-                    if wandb.run is not None:
-                        wandb.log(payload)
-                except ImportError:
-                    original_log_metrics(self, payload, step=None)
-            else:
-                original_log_metrics(self, extra, step=step)
+            _emit_grpo_compat_payload(self, extra, step=step, metrics=metrics)
 
         if run_dir is not None and any(key in metrics for key in best_val_trigger_keys):
             try:
