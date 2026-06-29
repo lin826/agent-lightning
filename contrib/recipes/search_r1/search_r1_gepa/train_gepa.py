@@ -366,7 +366,7 @@ def main() -> None:
     prompt_path = args.run_dir / "best_instruction_prompt.txt"
     prompt_path.write_text(best_candidate[INSTRUCTION_COMPONENT])
 
-    # GEPA logs with step=iteration; rollouts x-axis comes from total_metric_calls.
+    # GEPA logs with step=iteration; total_metric_calls is logged as a separate metric.
     log_gepa_wandb_metrics(
         {
             "val/em": best_val_em,

@@ -35,11 +35,7 @@ _RECIPE_DIR = _SCRIPTS_DIR.parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from wandb_run import (  # noqa: E402
-    ensure_gepa_wandb_step_axes_defined,
-    prepare_gepa_wandb_payload,
-    save_wandb_run_id,
-)
+from wandb_run import save_wandb_run_id  # noqa: E402
 
 DEFAULT_ENTITY = "ibm-bv"
 DEFAULT_PROJECT = "AgentLightning"
@@ -84,7 +80,9 @@ def _scan_history_rows(api: Api, entity: str, project: str, run_id: str) -> list
 
 def _payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
     skip = {"_timestamp", "_runtime", "_step", "run_id"}
-    return {k: v for k, v in row.items() if not k.startswith("_") and k not in skip and v is not None}
+    payload = {k: v for k, v in row.items() if not k.startswith("_") and k not in skip and v is not None}
+    # Drop legacy dual-axis keys from polluted source runs.
+    return {k: v for k, v in payload.items() if not k.endswith("@rollouts") and k != "rollouts"}
 
 
 def fork_gepa_run(
@@ -129,12 +127,10 @@ def fork_gepa_run(
     for row in clipped:
         step = int(row["_step"])
         payload = _payload_from_row(row)
-        merged[step] = prepare_gepa_wandb_payload(payload, iteration=step)
+        merged[step] = payload
         logger.info(
-            "  keep step %s: iteration=%s rollouts=%s total_metric_calls=%s val/em=%s",
+            "  keep step %s: total_metric_calls=%s val/em=%s",
             step,
-            payload.get("iteration"),
-            payload.get("rollouts"),
             payload.get("total_metric_calls"),
             payload.get("val/em"),
         )
@@ -159,7 +155,6 @@ def fork_gepa_run(
         settings=wandb.Settings(_disable_stats=True, silent=False),
     )
     assert run is not None
-    ensure_gepa_wandb_step_axes_defined()
 
     logged = 0
     for step in sorted(merged):
@@ -179,7 +174,6 @@ def fork_gepa_run(
         "seed/val_em",
         "total_metric_calls",
         "iteration",
-        "rollouts",
         "val_program_average",
         "best_valset_agg_score",
         "best_score_on_valset",

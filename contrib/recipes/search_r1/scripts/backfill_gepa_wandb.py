@@ -71,7 +71,6 @@ def main() -> None:
     }
 
     iteration_metrics: list[tuple[int, dict[str, float]]] = []
-    rollout_metrics: list[tuple[int, dict[str, float]]] = []
     try:
         import wandb
         from wandb.apis.public import Api
@@ -101,12 +100,6 @@ def main() -> None:
                         },
                     )
                 )
-        for row in run.scan_history():
-            step = int(row.get("_step", 0))
-            calls = row.get("total_metric_calls")
-            if calls is None or calls != calls:
-                continue
-            rollout_metrics.append((step, {"rollouts": int(calls), "total_metric_calls": int(calls)}))
     except Exception as exc:
         logger.warning("Could not load iteration history from WandB API: %s", exc)
 
@@ -133,10 +126,8 @@ def main() -> None:
         logger.info("Would log seed metrics at step 0: %s", seed_metrics)
         for step, metrics in iteration_metrics:
             logger.info("Would log iteration metrics at step %s: %s", step, metrics)
-        for step, metrics in rollout_metrics:
-            logger.info("Would backfill rollouts at step %s: %s", step, metrics)
         logger.info(
-            "Would log final metrics at step %s (rollouts=%s): %s",
+            "Would log final metrics at step %s (total_metric_calls=%s): %s",
             final_iteration,
             total_metric_calls,
             final_metrics,
@@ -184,18 +175,6 @@ def main() -> None:
             finish=True,
         )
 
-    for step, metrics in rollout_metrics:
-        log_gepa_wandb_metrics(
-            metrics,
-            step=step,
-            project=WANDB_PROJECT,
-            experiment_name=WANDB_EXPERIMENT,
-            run_dir=args.run_dir,
-            config={"backfill": True},
-            wandb_dir=_RECIPE_DIR / "wandb",
-            finish=True,
-        )
-
     log_gepa_wandb_metrics(
         {
             **final_metrics,
@@ -211,10 +190,9 @@ def main() -> None:
         finish=True,
     )
     logger.info(
-        "Backfilled run %s: seed step 0, %d iteration steps, %d rollout steps, final step %s (rollouts=%s)",
+        "Backfilled run %s: seed step 0, %d iteration steps, final step %s (total_metric_calls=%s)",
         args.run_id,
         len(iteration_metrics),
-        len(rollout_metrics),
         final_iteration,
         total_metric_calls,
     )
