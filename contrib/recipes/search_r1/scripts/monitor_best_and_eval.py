@@ -373,6 +373,19 @@ def monitor_gepa(states: Dict[str, ExperimentState], gepa_exp: dict[str, object]
             loaded = load_gepa_state_best(run_dir)
             if loaded:
                 score, metric_calls, program_idx, prompt = loaded
+                fe_state = load_full_eval_state(run_dir)
+                if fe_state.best_dev_score >= score and fe_state.best_program_idx >= 0:
+                    score = fe_state.best_dev_score
+                    metric_calls = fe_state.best_metric_calls
+                    program_idx = fe_state.best_program_idx
+                    resolved = resolve_gepa_eval_prompt(
+                        run_dir,
+                        metric_calls,
+                        program_idx,
+                        use_rewrite=bool(gepa_exp["use_rewrite"]),
+                    )
+                    if resolved is not None:
+                        prompt = resolved
                 state.last_state_mtime = mtime
                 print(
                     f"[{name}] gepa_state: best_score={score:.4f} metric_calls={metric_calls} prog={program_idx}",

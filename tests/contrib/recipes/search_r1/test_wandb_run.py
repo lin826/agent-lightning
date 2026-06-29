@@ -384,6 +384,9 @@ def test_install_gepa_wandb_grpo_compat_patch_triggers_full_eval_on_new_best(
         {
             "val_program_average": 0.28,
             "best_score_on_valset": 0.32,
+            "best_program_as_per_agg_score_valset": 2,
+            "new_program_idx": 2,
+            "new_instruction_instruction_prompt": "best candidate",
             "total_metric_calls": 600,
         },
         step=42,
@@ -391,6 +394,8 @@ def test_install_gepa_wandb_grpo_compat_patch_triggers_full_eval_on_new_best(
 
     assert len(triggered) == 1
     assert triggered[0]["metrics"]["best_score_on_valset"] == pytest.approx(0.32)
+    assert triggered[0]["metrics"]["best_program_as_per_agg_score_valset"] == 2
+    assert triggered[0]["metrics"]["new_instruction_instruction_prompt"] == "best candidate"
     assert triggered[0]["run_dir"] == run_dir
     assert triggered[0]["step"] == 42
 

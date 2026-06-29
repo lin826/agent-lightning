@@ -335,6 +335,40 @@ def sync_monitor_state_from_full_eval(
 
 
 _BEST_VAL_SCORE_KEYS = ("best_score_on_valset", "best_valset_agg_score", "base_program_full_valset_score")
+_BEST_PROGRAM_IDX_KEYS = ("best_program_as_per_agg_score_valset", "linear_pareto_front_program_idx")
+
+
+def _resolve_program_idx_from_metrics(metrics: dict[str, Any], *, trigger_key: str) -> int | None:
+    """Return the dev-subset best program index from the same GEPA log step as *trigger_key*."""
+    for key in _BEST_PROGRAM_IDX_KEYS:
+        if key in metrics:
+            return int(metrics[key])
+    if "new_program_idx" in metrics:
+        return int(metrics["new_program_idx"])
+    if trigger_key == "base_program_full_valset_score":
+        return 0
+    return None
+
+
+def _resolve_prompt_from_metrics(metrics: dict[str, Any], program_idx: int) -> dict[str, str] | None:
+    """Return the instruction prompt logged with this GEPA step, when available."""
+    try:
+        from search_r1_gepa.search_r1_gepa_adapter import INSTRUCTION_COMPONENT
+    except (ImportError, ModuleNotFoundError):
+        INSTRUCTION_COMPONENT = "instruction_prompt"  # type: ignore[misc, assignment]
+
+    new_program_idx = metrics.get("new_program_idx")
+    if new_program_idx is not None and int(new_program_idx) == program_idx:
+        instruction_key = f"new_instruction_{INSTRUCTION_COMPONENT}"
+        instruction = metrics.get(instruction_key)
+        if instruction:
+            return {INSTRUCTION_COMPONENT: str(instruction)}
+        for key, value in metrics.items():
+            if key.startswith("new_instruction_") and value:
+                component = key.removeprefix("new_instruction_")
+                return {component: str(value)}
+
+    return None
 
 
 def _resolve_program_prompt(
@@ -393,25 +427,32 @@ def collect_full_eval_trigger_candidates(
         if key not in metrics:
             continue
         dev_score = float(metrics[key])
-        loaded = load_best_from_gepa_state(run_dir)
-        if loaded is not None:
-            program_idx = loaded[2]
-            prompt = loaded[3]
-        else:
-            program_idx = int(
-                metrics.get(
-                    "best_program_as_per_agg_score_valset",
-                    metrics.get("new_program_idx", 0),
+        program_idx = _resolve_program_idx_from_metrics(metrics, trigger_key=key)
+        prompt: dict[str, str] | None = None
+        if program_idx is not None:
+            prompt = _resolve_prompt_from_metrics(metrics, program_idx)
+            if prompt is None:
+                prompt = _resolve_program_prompt(
+                    run_dir,
+                    program_idx,
+                    use_rewrite=use_rewrite,
+                    prefer_best_from_state=False,
                 )
-            )
-            prompt = _resolve_program_prompt(
-                run_dir,
-                program_idx,
-                use_rewrite=use_rewrite,
-                prefer_best_from_state=True,
-            )
+        if prompt is None:
+            loaded = load_best_from_gepa_state(run_dir)
+            if loaded is not None:
+                program_idx = loaded[2]
+                prompt = loaded[3]
+            else:
+                program_idx = program_idx if program_idx is not None else 0
+                prompt = _resolve_program_prompt(
+                    run_dir,
+                    program_idx,
+                    use_rewrite=use_rewrite,
+                    prefer_best_from_state=False,
+                )
         if prompt is not None:
-            candidates.append((dev_score, metric_calls, program_idx, prompt))
+            candidates.append((dev_score, metric_calls, program_idx if program_idx is not None else 0, prompt))
         break
 
     return candidates
@@ -530,6 +571,15 @@ def maybe_trigger_full_eval(
     return False
 
 
+def _instruction_component_name() -> str:
+    try:
+        from search_r1_gepa.search_r1_gepa_adapter import INSTRUCTION_COMPONENT
+
+        return INSTRUCTION_COMPONENT
+    except (ImportError, ModuleNotFoundError):
+        return "instruction_prompt"
+
+
 def resolve_gepa_eval_prompt(
     run_dir: Path,
     metric_calls: int,
@@ -538,33 +588,33 @@ def resolve_gepa_eval_prompt(
     use_rewrite: bool,
 ) -> dict[str, str] | None:
     """Resolve the instruction prompt for a monitor-submitted full-test eval job."""
-    loaded = load_best_from_gepa_state(run_dir)
-    if loaded is not None:
-        _score, state_metric_calls, state_program_idx, prompt = loaded
-        if state_metric_calls == metric_calls or (metric_calls == 0 and state_program_idx == program_idx):
-            return prompt
-
+    component = _instruction_component_name()
     monitored = run_dir / "monitored_prompts" / f"best_m{metric_calls}_idx{program_idx}.txt"
     if monitored.is_file():
-        try:
-            from search_r1_gepa.search_r1_gepa_adapter import INSTRUCTION_COMPONENT
+        return {component: monitored.read_text()}
 
-            return {INSTRUCTION_COMPONENT: monitored.read_text()}
-        except (ImportError, ModuleNotFoundError):
-            pass
+    fe_state = load_full_eval_state(run_dir)
+    if (
+        fe_state.best_metric_calls == metric_calls
+        and fe_state.best_program_idx == program_idx
+        and fe_state.best_program_idx >= 0
+    ):
+        latest = run_dir / "best_instruction_prompt.txt"
+        if latest.is_file():
+            return {component: latest.read_text()}
 
-    latest = run_dir / "best_instruction_prompt.txt"
-    if latest.is_file():
-        try:
-            from search_r1_gepa.search_r1_gepa_adapter import INSTRUCTION_COMPONENT
-
-            return {INSTRUCTION_COMPONENT: latest.read_text()}
-        except (ImportError, ModuleNotFoundError):
-            pass
-
-    return _resolve_program_prompt(
+    prompt = _resolve_program_prompt(
         run_dir,
         program_idx,
         use_rewrite=use_rewrite,
-        prefer_best_from_state=metric_calls > 0,
+        prefer_best_from_state=False,
     )
+    if prompt is not None:
+        return prompt
+
+    loaded = load_best_from_gepa_state(run_dir)
+    if loaded is not None:
+        _score, state_metric_calls, state_program_idx, state_prompt = loaded
+        if state_metric_calls == metric_calls or (metric_calls == 0 and state_program_idx == program_idx):
+            return state_prompt
+    return None

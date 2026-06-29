@@ -199,18 +199,18 @@ def test_collect_full_eval_trigger_candidates_uses_best_keys_only(
         "val_program_average": 0.22,
         "new_program_idx": 3,
         "best_score_on_valset": 0.24,
-        "best_program_as_per_agg_score_valset": 0,
+        "best_program_as_per_agg_score_valset": 2,
         "total_metric_calls": 100,
     }
     monkeypatch.setattr(
         gepa_full_eval,
         "load_best_from_gepa_state",
-        lambda *_args, **_kwargs: None,
+        lambda *_args, **_kwargs: (0.20, 50, 0, {INSTRUCTION_COMPONENT: "stale-seed"}),
     )
     monkeypatch.setattr(
         gepa_full_eval,
         "_resolve_program_prompt",
-        lambda *_args, **_kwargs: {INSTRUCTION_COMPONENT: "p"},
+        lambda *_args, **_kwargs: {INSTRUCTION_COMPONENT: "from-disk-idx"},
     )
     candidates = gepa_full_eval.collect_full_eval_trigger_candidates(
         metrics,
@@ -219,7 +219,104 @@ def test_collect_full_eval_trigger_candidates_uses_best_keys_only(
         use_rewrite=False,
     )
     assert len(candidates) == 1
-    assert candidates[0][0] == pytest.approx(0.24)
+    dev_score, metric_calls, program_idx, prompt = candidates[0]
+    assert dev_score == pytest.approx(0.24)
+    assert metric_calls == 100
+    assert program_idx == 2
+    assert prompt[INSTRUCTION_COMPONENT] == "from-disk-idx"
+
+
+def test_collect_full_eval_trigger_candidates_prefers_metrics_instruction(
+    run_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metrics = {
+        "best_score_on_valset": 0.315,
+        "best_program_as_per_agg_score_valset": 2,
+        "new_program_idx": 2,
+        "new_instruction_instruction_prompt": "winning prompt",
+        "total_metric_calls": 900,
+    }
+    monkeypatch.setattr(
+        gepa_full_eval,
+        "load_best_from_gepa_state",
+        lambda *_args, **_kwargs: (0.28, 0, 0, {INSTRUCTION_COMPONENT: "stale-seed"}),
+    )
+
+    candidates = gepa_full_eval.collect_full_eval_trigger_candidates(
+        metrics,
+        run_dir,
+        step=900,
+        use_rewrite=False,
+    )
+    assert len(candidates) == 1
+    _score, metric_calls, program_idx, prompt = candidates[0]
+    assert metric_calls == 900
+    assert program_idx == 2
+    assert prompt[INSTRUCTION_COMPONENT] == "winning prompt"
+
+
+def test_maybe_trigger_from_metrics_uses_metrics_over_stale_disk(
+    run_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    saved: list[tuple[int, int, str]] = []
+
+    def fake_save(run_dir: Path, metric_calls: int, program_idx: int, prompt: dict[str, str]) -> Path:
+        saved.append((metric_calls, program_idx, prompt.get(INSTRUCTION_COMPONENT, "")))
+        path = run_dir / "monitored_prompts" / f"best_m{metric_calls}_idx{program_idx}.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(prompt.get(INSTRUCTION_COMPONENT, ""))
+        return path
+
+    monkeypatch.setattr(gepa_full_eval, "save_gepa_prompt", fake_save)
+    monkeypatch.setattr(gepa_full_eval, "submit_gepa_eval_job", lambda **_kwargs: "77")
+    monkeypatch.setattr(
+        gepa_full_eval,
+        "load_best_from_gepa_state",
+        lambda *_args, **_kwargs: (0.28, 0, 0, {INSTRUCTION_COMPONENT: "stale-seed"}),
+    )
+
+    metrics = {
+        "best_score_on_valset": 0.315,
+        "best_program_as_per_agg_score_valset": 2,
+        "new_program_idx": 2,
+        "new_instruction_instruction_prompt": "winning prompt",
+        "total_metric_calls": 900,
+    }
+    assert gepa_full_eval.maybe_trigger_full_eval_from_metrics(
+        metrics,
+        run_dir,
+        step=900,
+        dry_run=False,
+    )
+    assert saved == [(900, 2, "winning prompt")]
+    state = gepa_full_eval.load_full_eval_state(run_dir)
+    assert state.best_program_idx == 2
+
+
+def test_resolve_gepa_eval_prompt_prefers_monitored_snapshot(
+    run_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monitored = run_dir / "monitored_prompts" / "best_m900_idx2.txt"
+    monitored.parent.mkdir(parents=True, exist_ok=True)
+    monitored.write_text("saved-at-trigger")
+
+    monkeypatch.setattr(
+        gepa_full_eval,
+        "load_best_from_gepa_state",
+        lambda *_args, **_kwargs: (0.28, 0, 0, {INSTRUCTION_COMPONENT: "stale-seed"}),
+    )
+
+    prompt = gepa_full_eval.resolve_gepa_eval_prompt(
+        run_dir,
+        metric_calls=900,
+        program_idx=2,
+        use_rewrite=False,
+    )
+    assert prompt is not None
+    assert prompt[INSTRUCTION_COMPONENT] == "saved-at-trigger"
 
 
 def test_sync_monitor_state_from_full_eval(run_dir: Path) -> None:
