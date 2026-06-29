@@ -26,13 +26,14 @@ EVAL_GENERATED_DIR = RECIPE_DIR / "eval" / "generated"
 BEST_SCORES_FILE = OUTPUTS_DIR / "best_val_scores.json"
 EVAL_TEMPLATE = RECIPE_DIR / "eval" / "eval_checkpoint.bsub"
 
-# Shared full-test eval trigger (also used by train_gepa.py).
+# Shared full-test eval helpers for GEPA (monitor-only, same flow as GRPO).
 from gepa_full_eval import (  # noqa: E402
     gepa_state_from_current_session,
     load_best_from_gepa_state,
     load_full_eval_state,
     load_training_session,
     maybe_trigger_full_eval,
+    resolve_gepa_eval_prompt,
     save_gepa_prompt,
     sync_monitor_state_from_full_eval,
 )
@@ -386,20 +387,7 @@ def monitor_gepa(states: Dict[str, ExperimentState], gepa_exp: dict[str, object]
                         f"  *** NEW BEST for {name}: {score:.4f} at metric_calls={metric_calls} ***",
                         flush=True,
                     )
-                    if maybe_trigger_full_eval(
-                        run_dir=run_dir,
-                        dev_score=score,
-                        metric_calls=metric_calls,
-                        program_idx=program_idx,
-                        prompt=prompt,
-                        eval_job_tag=str(gepa_exp["eval_job_tag"]),
-                        addr_file=str(gepa_exp["addr_file"]),
-                        run_dir_rel=str(gepa_exp["run_dir_rel"]),
-                        use_rewrite=bool(gepa_exp["use_rewrite"]),
-                        dry_run=dry_run,
-                    ):
-                        updated = True
-                    state.eval_submitted_steps = list(load_full_eval_state(run_dir).submitted_metric_calls)
+                    save_gepa_prompt_snapshot(run_dir, metric_calls, program_idx, prompt)
 
     # Fallback: seed val from stderr before gepa_state.bin exists for this session.
     err_log = find_latest_err_log(OUTPUTS_DIR, str(gepa_exp["job_prefix"]))
@@ -427,43 +415,61 @@ def monitor_gepa(states: Dict[str, ExperimentState], gepa_exp: dict[str, object]
             state.best_program_idx = program_idx
             updated = True
             print(f"  *** NEW BEST for {name} (log): {score:.4f} at metric_calls={metric_calls} ***", flush=True)
-            prompt_path = run_dir / "best_instruction_prompt.txt"
             if metric_calls == 0:
                 try:
                     from search_r1_gepa.search_r1_gepa_adapter import default_seed_candidate
 
-                    saved = save_gepa_prompt_snapshot(
+                    save_gepa_prompt_snapshot(
                         run_dir,
                         0,
                         0,
                         default_seed_candidate(use_rewrite=bool(gepa_exp["use_rewrite"])),
                     )
-                    if saved is not None:
-                        prompt_path = saved
                 except (ImportError, ModuleNotFoundError) as exc:
-                    print(f"  WARNING: GEPA deps unavailable, skipping seed eval: {exc}", flush=True)
-                    continue
-            if prompt_path.exists():
-                try:
-                    from search_r1_gepa.search_r1_gepa_adapter import INSTRUCTION_COMPONENT
-
-                    prompt = {INSTRUCTION_COMPONENT: prompt_path.read_text()}
-                except (ImportError, ModuleNotFoundError):
-                    prompt = {}
-                maybe_trigger_full_eval(
-                    run_dir=run_dir,
-                    dev_score=score,
-                    metric_calls=metric_calls,
-                    program_idx=program_idx,
-                    prompt=prompt,
-                    eval_job_tag=str(gepa_exp["eval_job_tag"]),
-                    addr_file=str(gepa_exp["addr_file"]),
-                    run_dir_rel=str(gepa_exp["run_dir_rel"]),
-                    use_rewrite=bool(gepa_exp["use_rewrite"]),
-                    dry_run=dry_run,
-                )
+                    print(f"  WARNING: GEPA deps unavailable, skipping seed prompt snapshot: {exc}", flush=True)
 
     return updated
+
+
+def maybe_submit_gepa_eval(name: str, gepa_exp: dict[str, object], state: ExperimentState, dry_run: bool) -> bool:
+    """Submit full-test eval for current GEPA val best if not yet submitted."""
+    if state.best_step < 0:
+        return False
+    if state.best_step in state.eval_submitted_steps:
+        return False
+
+    run_dir = Path(gepa_exp["run_dir"])
+    if load_training_session(run_dir) is None:
+        return False
+
+    prompt = resolve_gepa_eval_prompt(
+        run_dir,
+        state.best_step,
+        state.best_program_idx,
+        use_rewrite=bool(gepa_exp["use_rewrite"]),
+    )
+    if prompt is None:
+        print(
+            f"  [{name}] No prompt snapshot yet for metric_calls={state.best_step}, will retry next poll",
+            flush=True,
+        )
+        return False
+
+    if maybe_trigger_full_eval(
+        run_dir=run_dir,
+        dev_score=state.best_score,
+        metric_calls=state.best_step,
+        program_idx=state.best_program_idx,
+        prompt=prompt,
+        eval_job_tag=str(gepa_exp["eval_job_tag"]),
+        addr_file=str(gepa_exp["addr_file"]),
+        run_dir_rel=str(gepa_exp["run_dir_rel"]),
+        use_rewrite=bool(gepa_exp["use_rewrite"]),
+        dry_run=dry_run,
+    ):
+        state.eval_submitted_steps = list(load_full_eval_state(run_dir).submitted_metric_calls)
+        return True
+    return False
 
 
 def monitor_loop(poll_interval: int, grpo_outputs_dir: Path, dry_run: bool) -> None:
@@ -496,6 +502,9 @@ def monitor_loop(poll_interval: int, grpo_outputs_dir: Path, dry_run: bool) -> N
             updated = monitor_gepa(states, gepa_exp, dry_run) or updated
         for grpo_name, grpo_exp in EXPERIMENTS.items():
             if maybe_submit_grpo_eval(grpo_name, grpo_exp, states[grpo_name], dry_run):
+                updated = True
+        for gepa_exp in GEPA_EXPERIMENTS:
+            if maybe_submit_gepa_eval(str(gepa_exp["name"]), gepa_exp, states[str(gepa_exp["name"])], dry_run):
                 updated = True
 
         if updated:

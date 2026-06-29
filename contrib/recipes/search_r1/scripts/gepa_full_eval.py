@@ -8,8 +8,7 @@ eval job (``eval/eval_gepa_prompt.bsub``) to score it on ``test.parquet`` (7405 
 Per-candidate ``val_program_average`` scores do not trigger eval — only record-breaking
 aggregate dev bests, matching GRPO's ``val/reward`` record semantics.
 
-Used from ``train_gepa.py`` (in-process trigger) and ``monitor_best_and_eval.py``
-(fallback polling).
+Used from ``monitor_best_and_eval.py`` (same monitor-only full-test eval flow as GRPO).
 """
 
 from __future__ import annotations
@@ -231,10 +230,6 @@ def submit_gepa_eval_job(
     dry_run: bool = False,
 ) -> str | None:
     """Generate and submit a bsub GEPA full-test eval job. Returns LSF job id."""
-    from monitor_retrieval_servers import ensure_eval_retrieval_server
-
-    ensure_eval_retrieval_server(addr_file, dry_run=dry_run)
-
     template = GEPA_EVAL_TEMPLATE.read_text()
     script = template.replace("%EVAL_TAG%", eval_job_tag)
     script = script.replace("%METRIC_CALLS%", str(metric_calls))
@@ -466,7 +461,9 @@ def maybe_trigger_full_eval(
         else:
             program_idx = 0
 
-    if dev_score <= state.best_dev_score:
+    if dev_score < state.best_dev_score:
+        return False
+    if dev_score == state.best_dev_score and metric_calls in state.submitted_metric_calls:
         return False
     if metric_calls in state.submitted_metric_calls:
         logger.info(
@@ -511,71 +508,41 @@ def maybe_trigger_full_eval(
     return False
 
 
-def maybe_trigger_full_eval_from_state_file(
+def resolve_gepa_eval_prompt(
     run_dir: Path,
+    metric_calls: int,
+    program_idx: int,
     *,
-    eval_job_tag: str = DEFAULT_EVAL_JOB_TAG,
-    addr_file: str = DEFAULT_ADDR_FILE,
-    run_dir_rel: str = "outputs/gepa_qwen25_3b",
-    use_rewrite: bool = False,
-    dry_run: bool = False,
-) -> bool:
-    """Load ``gepa_state.bin`` and trigger full-test eval if dev-subset best improved."""
+    use_rewrite: bool,
+) -> dict[str, str] | None:
+    """Resolve the instruction prompt for a monitor-submitted full-test eval job."""
     loaded = load_best_from_gepa_state(run_dir)
-    if loaded is None:
-        return False
-    score, metric_calls, program_idx, prompt = loaded
-    return maybe_trigger_full_eval(
-        run_dir=run_dir,
-        dev_score=score,
-        metric_calls=metric_calls,
-        program_idx=program_idx,
-        prompt=prompt,
-        eval_job_tag=eval_job_tag,
-        addr_file=addr_file,
-        run_dir_rel=run_dir_rel,
-        use_rewrite=use_rewrite,
-        dry_run=dry_run,
-    )
+    if loaded is not None:
+        _score, state_metric_calls, state_program_idx, prompt = loaded
+        if state_metric_calls == metric_calls or (metric_calls == 0 and state_program_idx == program_idx):
+            return prompt
 
+    monitored = run_dir / "monitored_prompts" / f"best_m{metric_calls}_idx{program_idx}.txt"
+    if monitored.is_file():
+        try:
+            from search_r1_gepa.search_r1_gepa_adapter import INSTRUCTION_COMPONENT
 
-def install_gepa_full_eval_trigger(
-    *,
-    run_dir: Path,
-    eval_job_tag: str = DEFAULT_EVAL_JOB_TAG,
-    addr_file: str = DEFAULT_ADDR_FILE,
-    run_dir_rel: str = "outputs/gepa_qwen25_3b",
-    use_rewrite: bool = False,
-    dry_run: bool | None = None,
-) -> None:
-    """Patch GEPA ``ExperimentTracker.log_metrics`` to submit full-test eval on dev-subset records."""
-    from gepa.logging.experiment_tracker import ExperimentTracker
+            return {INSTRUCTION_COMPONENT: monitored.read_text()}
+        except (ImportError, ModuleNotFoundError):
+            pass
 
-    if getattr(ExperimentTracker, "_agl_full_eval_trigger_installed", False):
-        return
+    latest = run_dir / "best_instruction_prompt.txt"
+    if latest.is_file():
+        try:
+            from search_r1_gepa.search_r1_gepa_adapter import INSTRUCTION_COMPONENT
 
-    if dry_run is None:
-        dry_run = os.environ.get("GEPA_FULL_EVAL_DRY_RUN", "").lower() in {"1", "true", "yes"}
+            return {INSTRUCTION_COMPONENT: latest.read_text()}
+        except (ImportError, ModuleNotFoundError):
+            pass
 
-    original_log_metrics = ExperimentTracker.log_metrics
-
-    def log_metrics(self: ExperimentTracker, metrics: dict[str, Any], step: int | None = None) -> None:
-        original_log_metrics(self, metrics, step=step)
-        maybe_trigger_full_eval_from_metrics(
-            metrics,
-            run_dir,
-            step=step,
-            eval_job_tag=eval_job_tag,
-            addr_file=addr_file,
-            run_dir_rel=run_dir_rel,
-            use_rewrite=use_rewrite,
-            dry_run=dry_run,
-        )
-
-    ExperimentTracker.log_metrics = log_metrics  # type: ignore[method-assign]
-    ExperimentTracker._agl_full_eval_trigger_installed = True
-    logger.info(
-        "Installed GEPA full-test eval trigger (run_dir=%s dry_run=%s)",
+    return _resolve_program_prompt(
         run_dir,
-        dry_run,
+        program_idx,
+        use_rewrite=use_rewrite,
+        prefer_best_from_state=metric_calls > 0,
     )

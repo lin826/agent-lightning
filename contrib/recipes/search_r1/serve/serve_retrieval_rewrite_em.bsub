@@ -14,7 +14,7 @@
 set -euo pipefail
 
 PPLRL=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl
-PYTHON=${PPLRL}/.venv/bin/python
+PYTHON=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/.venv/bin/python
 WIKI=/proj/inf-scaling/zwhong/projs/asmi/code/dsl-agent/dspy_tutorial/wiki2017
 RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1
 ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_rewrite_em.txt

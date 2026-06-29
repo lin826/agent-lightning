@@ -4,9 +4,12 @@ Usage:
     python eval_search_r1_agent.py <config> <checkpoint_path> [--step N]
 
 Full test.parquet metrics (``test/em``, ``test/reward``) are logged to a dedicated
-eval WandB run at the given global step. Resolve the run id from
+eval WandB run at the given global step. Eval runs are named ``eval_*`` (e.g.
+``eval_rewrite_em``), not the training ``searchr1_*`` names. Resolve the run id from
 ``WANDB_RUN_ID``, ``{checkpoint_root}/wandb_eval_run_id.txt``, or let VERL create
-and persist a new eval run on first launch.
+and persist a new eval run on first launch. Existing ``wandb_eval_run_id.txt`` files
+resume the stored run (display name unchanged in WandB); delete the file to start a
+fresh eval run with the correct ``eval_*`` name.
 
 Examples:
     python eval_search_r1_agent.py qwen7b checkpoints/searchr1_qwen7b/global_step_10/actor --step 10
@@ -16,6 +19,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import os
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict
@@ -35,6 +39,7 @@ from train_search_r1_agent import (
 from wandb_run import (
     checkpoint_root_from_actor,
     resolve_actor_checkpoint,
+    resolve_eval_wandb_run_name,
     resolve_wandb_eval_run_id,
     setup_wandb_resume,
 )
@@ -47,11 +52,13 @@ def make_eval_config(
     checkpoint_path: str,
     step: int,
     *,
+    config_key: str,
     n_gpus: int | None = None,
     sanity: bool = False,
 ) -> Dict[str, Any]:
     """Modify a training config into an eval-only config pointing at a checkpoint."""
     config = deepcopy(base_config)
+    config["trainer"]["experiment_name"] = resolve_eval_wandb_run_name(config_key)
     _actor_dir, global_step_dir = resolve_actor_checkpoint(checkpoint_path)
     # Keep model.path as the base HF model for tokenizer init. VERL entrypoint calls
     # hf_tokenizer(model.path); FSDP actor dirs only store shards under actor/, with
@@ -119,20 +126,26 @@ def main() -> None:
         raise SystemExit(f"Invalid checkpoint path: {exc}") from exc
     checkpoint_path = actor_dir
     checkpoint_root = checkpoint_root_from_actor(checkpoint_path)
+    eval_run_name = resolve_eval_wandb_run_name(args.config)
     run_id = args.wandb_run_id or resolve_wandb_eval_run_id(checkpoint_dir=checkpoint_root)
     if run_id:
-        setup_wandb_resume(run_id)
-        print(f"Resuming WandB eval run {run_id} for full-test eval at step {args.step}")
-    else:
+        setup_wandb_resume(run_id, run_name=eval_run_name)
         print(
-            "No eval WandB run id found (set WANDB_RUN_ID or save wandb_eval_run_id.txt under checkpoint root); "
-            "eval will create a new run and persist its id"
+            f"Resuming WandB eval run {run_id} ({eval_run_name}) for full-test eval at step {args.step}"
+        )
+    else:
+        os.environ.pop("WANDB_RUN_ID", None)
+        os.environ.pop("WANDB_RESUME", None)
+        os.environ["WANDB_NAME"] = eval_run_name
+        print(
+            f"No eval WandB run id found; eval will create run {eval_run_name!r} and persist its id"
         )
 
     config = make_eval_config(
         base_config,
         str(checkpoint_path),
         args.step,
+        config_key=args.config,
         n_gpus=1 if args.sanity and args.n_gpus is None else args.n_gpus,
         sanity=args.sanity,
     )

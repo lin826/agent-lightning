@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -49,11 +50,30 @@ def test_resolve_wandb_eval_run_id_skips_training_file(monkeypatch: pytest.Monke
 def test_resolve_wandb_eval_run_id_isolated_per_variant(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     baseline_dir = tmp_path / "searchr1_qwen7b"
     shaped_dir = tmp_path / "searchr1_qwen3_8b_shaped"
-    wandb_run.save_wandb_eval_run_id(baseline_dir, "eval_baseline")
-    wandb_run.save_wandb_eval_run_id(shaped_dir, "eval_shaped")
+    wandb_run.save_wandb_eval_run_id(baseline_dir, "eval_baseline_id")
+    wandb_run.save_wandb_eval_run_id(shaped_dir, "eval_shaped_id")
     monkeypatch.delenv("WANDB_RUN_ID", raising=False)
-    assert wandb_run.resolve_wandb_eval_run_id(checkpoint_dir=baseline_dir) == "eval_baseline"
-    assert wandb_run.resolve_wandb_eval_run_id(checkpoint_dir=shaped_dir) == "eval_shaped"
+    assert wandb_run.resolve_wandb_eval_run_id(checkpoint_dir=baseline_dir) == "eval_baseline_id"
+    assert wandb_run.resolve_wandb_eval_run_id(checkpoint_dir=shaped_dir) == "eval_shaped_id"
+
+
+@pytest.mark.parametrize(
+    ("config_key", "expected_name"),
+    [
+        ("qwen7b", "eval_baseline"),
+        ("qwen3_8b", "eval_baseline_a"),
+        ("qwen3_8b_rewrite", "eval_rewrite"),
+        ("qwen3_8b_rewrite_em", "eval_rewrite_em"),
+        ("qwen3_8b_shaped", "eval_shaped"),
+    ],
+)
+def test_resolve_eval_wandb_run_name(config_key: str, expected_name: str) -> None:
+    assert wandb_run.resolve_eval_wandb_run_name(config_key) == expected_name
+
+
+def test_resolve_eval_wandb_run_name_unknown_key() -> None:
+    with pytest.raises(KeyError, match="unknown_variant"):
+        wandb_run.resolve_eval_wandb_run_name("unknown_variant")
 
 
 def test_build_gepa_wandb_init_kwargs_resumes_from_file(tmp_path: Path) -> None:
@@ -303,3 +323,20 @@ def test_install_gepa_wandb_grpo_compat_patch_historical_best_does_not_clobber_p
     best_logs = [entry for entry, _ in logged if "val/best_single_program_em" in entry]
     assert best_logs[-1]["val/best_single_program_em"] == pytest.approx(0.235)
     assert "val/em" not in best_logs[-1]
+
+
+def test_setup_wandb_resume_sets_run_name() -> None:
+    saved = {key: os.environ.get(key) for key in ("WANDB_NAME", "WANDB_RUN_ID", "WANDB_RESUME")}
+    try:
+        for key in saved:
+            os.environ.pop(key, None)
+        wandb_run.setup_wandb_resume("run123", run_name="eval_rewrite_em")
+        assert os.environ["WANDB_RUN_ID"] == "run123"
+        assert os.environ["WANDB_RESUME"] == "allow"
+        assert os.environ["WANDB_NAME"] == "eval_rewrite_em"
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value

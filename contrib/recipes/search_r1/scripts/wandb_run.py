@@ -12,7 +12,34 @@ logger = logging.getLogger(__name__)
 WANDB_RUN_ID_FILENAME = "wandb_run_id.txt"
 WANDB_EVAL_RUN_ID_FILENAME = "wandb_eval_run_id.txt"
 
+# WandB display names for dedicated full-test eval runs (``eval_search_r1_agent.py``).
+# Training runs use ``searchr1_*``; eval runs use the ``eval_*`` prefix below.
+EVAL_WANDB_RUN_NAMES: dict[str, str] = {
+    "qwen7b": "eval_baseline",
+    "qwen3_8b": "eval_baseline_a",
+    "qwen3_8b_rewrite": "eval_rewrite",
+    "qwen3_8b_rewrite_em": "eval_rewrite_em",
+    "qwen3_8b_shaped": "eval_shaped",
+}
+
 _gepa_rollouts_axis_defined_run_ids: set[str] = set()
+
+
+def resolve_eval_wandb_run_name(config_key: str) -> str:
+    """Return the WandB run name for a GRPO full-test eval variant.
+
+    Args:
+        config_key: CLI/config key passed to ``eval_search_r1_agent.py`` (e.g.
+            ``qwen3_8b_rewrite_em``).
+
+    Raises:
+        KeyError: If ``config_key`` is not a known eval variant.
+    """
+    try:
+        return EVAL_WANDB_RUN_NAMES[config_key]
+    except KeyError as exc:
+        known = ", ".join(sorted(EVAL_WANDB_RUN_NAMES))
+        raise KeyError(f"Unknown eval config key {config_key!r}; expected one of: {known}") from exc
 
 
 def checkpoint_root_from_actor(actor_path: Path) -> Path:
@@ -244,10 +271,19 @@ def resolve_wandb_eval_run_id(
     return None
 
 
-def setup_wandb_resume(run_id: str, *, resume: str = "allow") -> None:
-    """Set env vars so VERL / wandb.init resume the original run."""
+def setup_wandb_resume(run_id: str, *, resume: str = "allow", run_name: str | None = None) -> None:
+    """Set env vars so VERL / wandb.init resume the original run.
+
+    When ``run_name`` is set it is exported as ``WANDB_NAME`` for new runs. Resuming an
+    existing run id keeps the name stored in WandB; delete ``wandb_eval_run_id.txt`` to
+    start a fresh eval run with the desired name.
+    """
     os.environ["WANDB_RUN_ID"] = run_id.strip()
     os.environ["WANDB_RESUME"] = resume
+    if run_name:
+        os.environ["WANDB_NAME"] = run_name
+    else:
+        os.environ.pop("WANDB_NAME", None)
 
 
 def resolve_gepa_wandb_run_id(

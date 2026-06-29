@@ -47,12 +47,7 @@ from search_r1_gepa.search_r1_gepa_adapter import (  # noqa: E402
     make_openai_llm_call,
 )
 from search_r1_agent import INSTRUCTION_FORMAT, INSTRUCTION_FORMAT_REWRITE  # noqa: E402
-from gepa_full_eval import (  # noqa: E402
-    install_gepa_full_eval_trigger,
-    maybe_trigger_full_eval,
-    maybe_trigger_full_eval_from_state_file,
-    start_training_session,
-)
+from gepa_full_eval import start_training_session  # noqa: E402
 from wandb_run import (  # noqa: E402
     build_gepa_wandb_init_kwargs,
     install_gepa_wandb_grpo_compat_patch,
@@ -285,24 +280,6 @@ def main() -> None:
     logger.info("Seed val/em=%.4f", seed_val_em)
 
     install_gepa_wandb_grpo_compat_patch(reflection_minibatch_size=REFLECTION_MINIBATCH_SIZE)
-    install_gepa_full_eval_trigger(
-        run_dir=args.run_dir,
-        eval_job_tag=variant.eval_job_tag,
-        addr_file=variant.eval_addr_file,
-        use_rewrite=variant.use_rewrite,
-        run_dir_rel=f"outputs/{variant.run_dir_name}",
-    )
-    maybe_trigger_full_eval(
-        run_dir=args.run_dir,
-        dev_score=seed_val_em,
-        metric_calls=0,
-        program_idx=0,
-        prompt=seed_candidate,
-        eval_job_tag=variant.eval_job_tag,
-        addr_file=variant.eval_addr_file,
-        use_rewrite=variant.use_rewrite,
-        run_dir_rel=f"outputs/{variant.run_dir_name}",
-    )
     if not resuming_gepa:
         # Fresh runs only: seed metrics before gepa.optimize. On resume, gepa re-logs from
         # gepa_state.bin and a separate init+finish would fork a new WandB run.
@@ -341,13 +318,6 @@ def main() -> None:
 
     best_candidate = result.best_candidate
     best_val_em = evaluate_split(val_adapter, best_candidate, val_data)
-    maybe_trigger_full_eval_from_state_file(
-        run_dir=args.run_dir,
-        eval_job_tag=variant.eval_job_tag,
-        addr_file=variant.eval_addr_file,
-        use_rewrite=variant.use_rewrite,
-        run_dir_rel=f"outputs/{variant.run_dir_name}",
-    )
     train_adapter = SearchR1GEPAAdapter(
         llm_call,
         eval_mode="train",
