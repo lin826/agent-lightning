@@ -510,11 +510,23 @@ def resolve_gepa_iteration_for_metric_calls(
     return metric_calls
 
 
-def install_gepa_wandb_grpo_compat_patch(*, reflection_minibatch_size: int) -> None:
+def install_gepa_wandb_grpo_compat_patch(
+    *,
+    reflection_minibatch_size: int,
+    run_dir: Path | None = None,
+    eval_job_tag: str = "qwen25_3b_gepa",
+    eval_addr_file: str = "bm25_server_addr_eval_gepa.txt",
+    run_dir_rel: str = "outputs/gepa_qwen25_3b",
+    use_rewrite: bool = False,
+) -> None:
     """Mirror GEPA mean EM scores into GRPO-style ``val/reward`` and ``training/reward`` keys.
 
     GEPA adapter scores are per-example EM (0/1); ``val_program_average`` and
     ``subsample_score`` / ``new_subsample_score`` are sums or means over those scores.
+
+    When ``run_dir`` is set, a new dev-subset historical best
+    (``best_score_on_valset`` / ``best_valset_agg_score``) also submits full-test eval
+    via :func:`gepa_full_eval.maybe_trigger_full_eval_from_metrics`.
     """
     from gepa.logging.experiment_tracker import ExperimentTracker
 
@@ -523,6 +535,11 @@ def install_gepa_wandb_grpo_compat_patch(*, reflection_minibatch_size: int) -> N
 
     original_log_metrics = ExperimentTracker.log_metrics
     minibatch_size = max(1, reflection_minibatch_size)
+    best_val_trigger_keys = (
+        "best_score_on_valset",
+        "best_valset_agg_score",
+        "base_program_full_valset_score",
+    )
 
     def log_metrics(self: ExperimentTracker, metrics: dict[str, Any], step: int | None = None) -> None:
         if self.use_wandb and step is not None:
@@ -567,6 +584,22 @@ def install_gepa_wandb_grpo_compat_patch(*, reflection_minibatch_size: int) -> N
                 extra["total_metric_calls"] = int(metrics["total_metric_calls"])
             payload = prepare_gepa_wandb_payload(extra, iteration=step)
             original_log_metrics(self, payload, step=step)
+
+        if run_dir is not None and any(key in metrics for key in best_val_trigger_keys):
+            try:
+                from gepa_full_eval import maybe_trigger_full_eval_from_metrics
+
+                maybe_trigger_full_eval_from_metrics(
+                    metrics,
+                    run_dir,
+                    step=step,
+                    eval_job_tag=eval_job_tag,
+                    addr_file=eval_addr_file,
+                    run_dir_rel=run_dir_rel,
+                    use_rewrite=use_rewrite,
+                )
+            except Exception as exc:
+                logger.warning("GEPA full-test eval trigger failed at step %s: %s", step, exc)
 
     ExperimentTracker.log_metrics = log_metrics  # type: ignore[method-assign]
     ExperimentTracker._agl_grpo_compat_patched = True

@@ -47,7 +47,7 @@ from search_r1_gepa.search_r1_gepa_adapter import (  # noqa: E402
     make_openai_llm_call,
 )
 from search_r1_agent import INSTRUCTION_FORMAT, INSTRUCTION_FORMAT_REWRITE  # noqa: E402
-from gepa_full_eval import start_training_session  # noqa: E402
+from gepa_full_eval import maybe_trigger_full_eval, start_training_session  # noqa: E402
 from wandb_run import (  # noqa: E402
     build_gepa_wandb_init_kwargs,
     install_gepa_wandb_grpo_compat_patch,
@@ -279,8 +279,27 @@ def main() -> None:
     seed_val_em = evaluate_split(val_adapter, seed_candidate, val_data)
     logger.info("Seed val/em=%.4f", seed_val_em)
 
-    install_gepa_wandb_grpo_compat_patch(reflection_minibatch_size=REFLECTION_MINIBATCH_SIZE)
+    install_gepa_wandb_grpo_compat_patch(
+        reflection_minibatch_size=REFLECTION_MINIBATCH_SIZE,
+        run_dir=args.run_dir,
+        eval_job_tag=variant.eval_job_tag,
+        eval_addr_file=variant.eval_addr_file,
+        run_dir_rel=f"outputs/{variant.run_dir_name}",
+        use_rewrite=variant.use_rewrite,
+    )
     if not resuming_gepa:
+        maybe_trigger_full_eval(
+            run_dir=args.run_dir,
+            dev_score=seed_val_em,
+            metric_calls=0,
+            program_idx=0,
+            prompt=seed_candidate,
+            eval_job_tag=variant.eval_job_tag,
+            addr_file=variant.eval_addr_file,
+            run_dir_rel=f"outputs/{variant.run_dir_name}",
+            use_rewrite=variant.use_rewrite,
+            iteration=0,
+        )
         # Fresh runs only: seed metrics before gepa.optimize. On resume, gepa re-logs from
         # gepa_state.bin and a separate init+finish would fork a new WandB run.
         log_gepa_wandb_metrics(

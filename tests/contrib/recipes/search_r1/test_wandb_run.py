@@ -337,6 +337,65 @@ def test_install_gepa_wandb_grpo_compat_patch_historical_best_does_not_clobber_p
     assert "val/em" not in best_logs[-1]
 
 
+def test_install_gepa_wandb_grpo_compat_patch_triggers_full_eval_on_new_best(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("gepa")
+    from gepa.logging.experiment_tracker import ExperimentTracker
+    from gepa_full_eval import maybe_trigger_full_eval, start_training_session
+
+    if hasattr(ExperimentTracker, "_agl_grpo_compat_patched"):
+        delattr(ExperimentTracker, "_agl_grpo_compat_patched")
+
+    run_dir = tmp_path / "gepa_run"
+    start_training_session(run_dir, fresh=True)
+    maybe_trigger_full_eval(
+        run_dir=run_dir,
+        dev_score=0.30,
+        metric_calls=10,
+        program_idx=0,
+        prompt={"instruction_prompt": "seed"},
+        dry_run=True,
+    )
+
+    triggered: list[dict[str, Any]] = []
+
+    def fake_trigger(metrics: dict[str, Any], run_dir_arg: Path, **kwargs: Any) -> bool:
+        triggered.append({"metrics": metrics, "run_dir": run_dir_arg, **kwargs})
+        return True
+
+    monkeypatch.setattr("gepa_full_eval.maybe_trigger_full_eval_from_metrics", fake_trigger)
+
+    def fake_log_metrics(self: ExperimentTracker, metrics: dict[str, Any], step: int | None = None) -> None:
+        return None
+
+    monkeypatch.setattr(ExperimentTracker, "log_metrics", fake_log_metrics)
+    wandb_run.install_gepa_wandb_grpo_compat_patch(
+        reflection_minibatch_size=3,
+        run_dir=run_dir,
+        eval_job_tag="qwen25_3b_gepa",
+    )
+
+    tracker = ExperimentTracker(use_wandb=True)
+    tracker.log_metrics(
+        {
+            "val_program_average": 0.28,
+            "best_score_on_valset": 0.32,
+            "total_metric_calls": 600,
+        },
+        step=42,
+    )
+
+    assert len(triggered) == 1
+    assert triggered[0]["metrics"]["best_score_on_valset"] == pytest.approx(0.32)
+    assert triggered[0]["run_dir"] == run_dir
+    assert triggered[0]["step"] == 42
+
+    tracker.log_metrics({"val_program_average": 0.27}, step=43)
+    assert len(triggered) == 1
+
+
 def test_resolve_gepa_iteration_for_metric_calls_uses_full_eval_state(tmp_path: Path) -> None:
     from gepa_full_eval import FullEvalState, save_full_eval_state
 

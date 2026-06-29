@@ -8,7 +8,9 @@ eval job (``eval/eval_gepa_prompt.bsub``) to score it on ``test.parquet`` (7405 
 Per-candidate ``val_program_average`` scores do not trigger eval — only record-breaking
 aggregate dev bests, matching GRPO's ``val/reward`` record semantics.
 
-Used from ``monitor_best_and_eval.py`` (same monitor-only full-test eval flow as GRPO).
+Triggered in-process from ``train_gepa.py`` (seed + WandB patch) and from
+``monitor_best_and_eval.py`` as a polling fallback (GRPO full-test eval remains
+monitor-only).
 """
 
 from __future__ import annotations
@@ -479,9 +481,7 @@ def maybe_trigger_full_eval(
         else:
             program_idx = 0
 
-    if dev_score < state.best_dev_score:
-        return False
-    if dev_score == state.best_dev_score and metric_calls in state.submitted_metric_calls:
+    if dev_score <= state.best_dev_score:
         return False
     if metric_calls in state.submitted_metric_calls:
         logger.info(

@@ -93,6 +93,32 @@ def test_maybe_trigger_full_eval_skips_non_record(run_dir: Path, monkeypatch: py
     )
 
 
+def test_maybe_trigger_full_eval_skips_tie_score(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    submitted: list[int] = []
+
+    def fake_submit(**kwargs: Any) -> str:
+        submitted.append(kwargs["metric_calls"])
+        return "1"
+
+    monkeypatch.setattr(gepa_full_eval, "submit_gepa_eval_job", fake_submit)
+    prompt = {INSTRUCTION_COMPONENT: "test prompt"}
+    gepa_full_eval.maybe_trigger_full_eval(
+        run_dir=run_dir,
+        dev_score=0.30,
+        metric_calls=10,
+        program_idx=0,
+        prompt=prompt,
+    )
+    assert not gepa_full_eval.maybe_trigger_full_eval(
+        run_dir=run_dir,
+        dev_score=0.30,
+        metric_calls=20,
+        program_idx=1,
+        prompt=prompt,
+    )
+    assert submitted == [10]
+
+
 def test_maybe_trigger_from_metrics_skips_val_program_average_only(
     run_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
