@@ -24,9 +24,9 @@ if str(_SCRIPTS_DIR) not in sys.path:
 from gepa.core.adapter import EvaluationBatch, GEPAAdapter
 from qa_em import compute_score_em, extract_solution
 from search_r1_agent import (
-    call_llm,
     execute_response,
     INSTRUCTION_FORMAT,
+    INSTRUCTION_FORMAT_REWRITE,
     postprocess_response,
 )
 
@@ -95,6 +95,7 @@ def run_search_r1_rollout(
     max_turns: int = 4,
     temperature: float = 1.0,
     max_tokens: int = 500,
+    use_rewrite: bool = False,
 ) -> str:
     """Run a multi-turn Search-R1 rollout with a custom instruction prompt."""
     del max_tokens  # reserved for future per-turn token limits
@@ -102,6 +103,12 @@ def run_search_r1_rollout(
     rollout_content = ""
     finished = False
     turn_id = 0
+
+    if use_rewrite:
+        rewrite_response = llm_call(prompt, temperature)
+        if "</rewrite>" in rewrite_response:
+            rewrite_response = rewrite_response.split("</rewrite>")[0] + "</rewrite>"
+        rollout_content += rewrite_response
 
     while turn_id < max_turns and not finished:
         turn_id += 1
@@ -132,6 +139,7 @@ class SearchR1GEPAAdapter(GEPAAdapter[SearchR1DataInst, SearchR1Trajectory, Sear
         val_temperature: float = 0.0,
         eval_mode: str = "train",
         rollout_concurrency: int = 1,
+        use_rewrite: bool = False,
     ) -> None:
         self.llm_call = llm_call
         self.max_turns = max_turns
@@ -139,6 +147,7 @@ class SearchR1GEPAAdapter(GEPAAdapter[SearchR1DataInst, SearchR1Trajectory, Sear
         self.val_temperature = val_temperature
         self.eval_mode = eval_mode
         self.rollout_concurrency = max(1, rollout_concurrency)
+        self.use_rewrite = use_rewrite
 
     def _temperature(self) -> float:
         return self.val_temperature if self.eval_mode == "val" else self.train_temperature
@@ -155,6 +164,7 @@ class SearchR1GEPAAdapter(GEPAAdapter[SearchR1DataInst, SearchR1Trajectory, Sear
                 data["question"],
                 max_turns=self.max_turns,
                 temperature=self._temperature(),
+                use_rewrite=self.use_rewrite,
             )
             em_score = float(compute_score_em(rollout_content, data["golden_answers"]))
             extracted = extract_solution(rollout_content)
@@ -265,5 +275,6 @@ def make_openai_llm_call(
     return _call
 
 
-def default_seed_candidate() -> dict[str, str]:
-    return {INSTRUCTION_COMPONENT: INSTRUCTION_FORMAT}
+def default_seed_candidate(*, use_rewrite: bool = False) -> dict[str, str]:
+    instruction = INSTRUCTION_FORMAT_REWRITE if use_rewrite else INSTRUCTION_FORMAT
+    return {INSTRUCTION_COMPONENT: instruction}

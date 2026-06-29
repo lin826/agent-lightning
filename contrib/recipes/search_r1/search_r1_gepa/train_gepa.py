@@ -7,7 +7,7 @@ updates (including Search-R1 ``<rewrite>`` variants). Uses the same data split,
 BM25 retrieval, EM metric, and Qwen2.5-3B-Instruct task model as GRPO jobs.
 
 Usage:
-    python search_r1_gepa/train_gepa.py
+    python search_r1_gepa/train_gepa.py [--rewrite]
 
 Environment:
     RETRIEVAL_SERVER_URL or RETRIEVAL_SERVER_ADDR_FILE — BM25 server (required)
@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -45,27 +46,25 @@ from search_r1_gepa.search_r1_gepa_adapter import (  # noqa: E402
     default_seed_candidate,
     make_openai_llm_call,
 )
-from search_r1_agent import INSTRUCTION_FORMAT  # noqa: E402
+from search_r1_agent import INSTRUCTION_FORMAT, INSTRUCTION_FORMAT_REWRITE  # noqa: E402
 from gepa_full_eval import (  # noqa: E402
-    DEFAULT_ADDR_FILE,
-    DEFAULT_EVAL_JOB_TAG,
     install_gepa_full_eval_trigger,
     maybe_trigger_full_eval,
+    maybe_trigger_full_eval_from_state_file,
     start_training_session,
 )
 from wandb_run import (  # noqa: E402
     build_gepa_wandb_init_kwargs,
     install_gepa_wandb_grpo_compat_patch,
     log_gepa_wandb_metrics,
-    resolve_wandb_run_id,
-    validate_wandb_run_id,
+    resolve_gepa_wandb_run_id,
+    save_wandb_run_id,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 WANDB_PROJECT = "AgentLightning"
-WANDB_EXPERIMENT = "searchr1_qwen25_3b_gepa"
 MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
 DATA_SOURCE = "hotpotqa"
 TRAIN_FILE = "data/train.parquet"
@@ -73,6 +72,50 @@ VAL_FILE = "data/test_dev.parquet"
 DEFAULT_MAX_METRIC_CALLS = 1500
 DEFAULT_ROLLOUT_CONCURRENCY = 1
 REFLECTION_MINIBATCH_SIZE = 3
+
+
+@dataclass(frozen=True)
+class GepaVariantConfig:
+    """Paths and flags for a GEPA experiment variant."""
+
+    name: str
+    run_dir_name: str
+    wandb_experiment: str
+    eval_job_tag: str
+    eval_addr_file: str
+    use_rewrite: bool
+
+
+GEPA_VARIANTS: dict[str, GepaVariantConfig] = {
+    "baseline": GepaVariantConfig(
+        name="baseline",
+        run_dir_name="gepa_qwen25_3b",
+        wandb_experiment="searchr1_qwen25_3b_gepa",
+        eval_job_tag="qwen25_3b_gepa",
+        eval_addr_file="bm25_server_addr_eval_gepa.txt",
+        use_rewrite=False,
+    ),
+    "rewrite": GepaVariantConfig(
+        name="rewrite",
+        run_dir_name="gepa_qwen25_3b_rewrite",
+        wandb_experiment="searchr1_qwen25_3b_gepa_rewrite",
+        eval_job_tag="qwen25_3b_gepa_rewrite",
+        eval_addr_file="bm25_server_addr_eval_gepa_rewrite.txt",
+        use_rewrite=True,
+    ),
+}
+
+
+def resolve_gepa_variant(*, rewrite: bool = False) -> GepaVariantConfig:
+    return GEPA_VARIANTS["rewrite" if rewrite else "baseline"]
+
+
+def default_run_dir(recipe_dir: Path, *, rewrite: bool = False) -> Path:
+    return recipe_dir / "outputs" / resolve_gepa_variant(rewrite=rewrite).run_dir_name
+
+
+# Backward-compatible alias for scripts that target the baseline GEPA run.
+WANDB_EXPERIMENT = GEPA_VARIANTS["baseline"].wandb_experiment
 
 
 def resolve_rollout_concurrency(cli_value: int | None) -> int:
@@ -132,7 +175,17 @@ def evaluate_split(
 def main() -> None:
     parser = argparse.ArgumentParser(description="GEPA prompt optimization baseline for Search-R1")
     parser.add_argument("--data-dir", type=Path, default=_RECIPE_DIR, help="Recipe directory containing data/")
-    parser.add_argument("--run-dir", type=Path, default=_RECIPE_DIR / "outputs" / "gepa_qwen25_3b", help="GEPA state dir")
+    parser.add_argument(
+        "--run-dir",
+        type=Path,
+        default=None,
+        help="GEPA state dir (default: outputs/gepa_qwen25_3b or outputs/gepa_qwen25_3b_rewrite)",
+    )
+    parser.add_argument(
+        "--rewrite",
+        action="store_true",
+        help="Use <rewrite> seed instruction and rewrite turn during rollouts (GRPO rewrite variant)",
+    )
     parser.add_argument("--max-metric-calls", type=int, default=None, help="GEPA evaluation budget")
     parser.add_argument("--train-subset", type=int, default=None, help="Cap train examples (smoke tests)")
     parser.add_argument(
@@ -143,6 +196,10 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
+
+    variant = resolve_gepa_variant(rewrite=args.rewrite)
+    if args.run_dir is None:
+        args.run_dir = default_run_dir(_RECIPE_DIR, rewrite=args.rewrite)
 
     max_metric_calls = args.max_metric_calls
     if max_metric_calls is None:
@@ -164,54 +221,76 @@ def main() -> None:
     args.run_dir.mkdir(parents=True, exist_ok=True)
 
     wandb_dir = _RECIPE_DIR / "wandb"
-    saved_run_id = resolve_wandb_run_id(run_dir=args.run_dir)
     fresh_session = os.environ.get("GEPA_FRESH_SESSION", "").lower() in {"1", "true", "yes"}
-    if saved_run_id:
-        validated_run_id = validate_wandb_run_id(
-            saved_run_id,
+    gepa_state_path = args.run_dir / "gepa_state.bin"
+    resuming_gepa = gepa_state_path.is_file() and not fresh_session
+    if not fresh_session:
+        run_id = resolve_gepa_wandb_run_id(
             project=WANDB_PROJECT,
-            directory=args.run_dir,
-            kind="train",
+            experiment_name=variant.wandb_experiment,
+            run_dir=args.run_dir,
+            wandb_dir=wandb_dir,
         )
-        if validated_run_id is None:
-            fresh_session = True
+        if run_id:
+            save_wandb_run_id(args.run_dir, run_id)
+        elif resuming_gepa:
+            logger.warning(
+                "Resuming gepa_state.bin but no valid WandB run id was found; "
+                "gepa.optimize may create a new WandB run"
+            )
     start_training_session(args.run_dir, fresh=fresh_session)
 
     rollout_concurrency = resolve_rollout_concurrency(args.rollout_concurrency)
     logger.info("Rollout concurrency=%d", rollout_concurrency)
 
     llm_call = make_openai_llm_call(base_url=api_base, model=MODEL_NAME, default_temperature=1.0)
-    adapter = SearchR1GEPAAdapter(llm_call, eval_mode="train", rollout_concurrency=rollout_concurrency)
+    # Use deterministic val temperature for GEPA metric calls so scores match seed/final eval.
+    adapter = SearchR1GEPAAdapter(
+        llm_call,
+        eval_mode="val",
+        rollout_concurrency=rollout_concurrency,
+        use_rewrite=variant.use_rewrite,
+    )
 
-    seed_candidate = default_seed_candidate()
+    seed_candidate = default_seed_candidate(use_rewrite=variant.use_rewrite)
+    seed_instruction = INSTRUCTION_FORMAT_REWRITE if variant.use_rewrite else INSTRUCTION_FORMAT
     wandb_config: dict[str, Any] = {
         "baseline": "gepa",
+        "variant": variant.name,
+        "use_rewrite": variant.use_rewrite,
         "model": MODEL_NAME,
         "data_source": DATA_SOURCE,
         "train_file": TRAIN_FILE,
         "val_file": VAL_FILE,
         "max_metric_calls": max_metric_calls,
         "rollout_concurrency": rollout_concurrency,
-        "seed_instruction": INSTRUCTION_FORMAT[:200],
+        "seed_instruction": seed_instruction[:200],
     }
     wandb_init_kwargs = build_gepa_wandb_init_kwargs(
         project=WANDB_PROJECT,
-        name=WANDB_EXPERIMENT,
+        name=variant.wandb_experiment,
         config=wandb_config,
         run_dir=args.run_dir,
         wandb_dir=wandb_dir,
     )
 
     logger.info("Evaluating seed prompt on val (n=%d)...", len(val_data))
-    val_adapter = SearchR1GEPAAdapter(llm_call, eval_mode="val", rollout_concurrency=rollout_concurrency)
+    val_adapter = SearchR1GEPAAdapter(
+        llm_call,
+        eval_mode="val",
+        rollout_concurrency=rollout_concurrency,
+        use_rewrite=variant.use_rewrite,
+    )
     seed_val_em = evaluate_split(val_adapter, seed_candidate, val_data)
     logger.info("Seed val/em=%.4f", seed_val_em)
 
     install_gepa_wandb_grpo_compat_patch(reflection_minibatch_size=REFLECTION_MINIBATCH_SIZE)
     install_gepa_full_eval_trigger(
         run_dir=args.run_dir,
-        eval_job_tag=DEFAULT_EVAL_JOB_TAG,
-        addr_file=DEFAULT_ADDR_FILE,
+        eval_job_tag=variant.eval_job_tag,
+        addr_file=variant.eval_addr_file,
+        use_rewrite=variant.use_rewrite,
+        run_dir_rel=f"outputs/{variant.run_dir_name}",
     )
     maybe_trigger_full_eval(
         run_dir=args.run_dir,
@@ -219,21 +298,28 @@ def main() -> None:
         metric_calls=0,
         program_idx=0,
         prompt=seed_candidate,
+        eval_job_tag=variant.eval_job_tag,
+        addr_file=variant.eval_addr_file,
+        use_rewrite=variant.use_rewrite,
+        run_dir_rel=f"outputs/{variant.run_dir_name}",
     )
-    log_gepa_wandb_metrics(
-        {
-            "seed/val_em": seed_val_em,
-            "val/em": seed_val_em,
-            "val/reward": seed_val_em,
-        },
-        step=0,
-        project=WANDB_PROJECT,
-        experiment_name=WANDB_EXPERIMENT,
-        run_dir=args.run_dir,
-        config=wandb_config,
-        wandb_dir=_RECIPE_DIR / "wandb",
-        finish=True,
-    )
+    if not resuming_gepa:
+        # Fresh runs only: seed metrics before gepa.optimize. On resume, gepa re-logs from
+        # gepa_state.bin and a separate init+finish would fork a new WandB run.
+        log_gepa_wandb_metrics(
+            {
+                "seed/val_em": seed_val_em,
+                "val/em": seed_val_em,
+                "val/reward": seed_val_em,
+            },
+            step=0,
+            project=WANDB_PROJECT,
+            experiment_name=variant.wandb_experiment,
+            run_dir=args.run_dir,
+            config=wandb_config,
+            wandb_dir=wandb_dir,
+            finish=True,
+        )
 
     result = gepa.optimize(
         seed_candidate=seed_candidate,
@@ -255,23 +341,33 @@ def main() -> None:
 
     best_candidate = result.best_candidate
     best_val_em = evaluate_split(val_adapter, best_candidate, val_data)
-    maybe_trigger_full_eval(
+    maybe_trigger_full_eval_from_state_file(
         run_dir=args.run_dir,
-        dev_score=best_val_em,
-        metric_calls=result.total_metric_calls,
-        program_idx=-1,
-        prompt=best_candidate,
+        eval_job_tag=variant.eval_job_tag,
+        addr_file=variant.eval_addr_file,
+        use_rewrite=variant.use_rewrite,
+        run_dir_rel=f"outputs/{variant.run_dir_name}",
     )
     train_adapter = SearchR1GEPAAdapter(
-        llm_call, eval_mode="train", rollout_concurrency=rollout_concurrency
+        llm_call,
+        eval_mode="train",
+        rollout_concurrency=rollout_concurrency,
+        use_rewrite=variant.use_rewrite,
     )
     best_train_em = evaluate_split(train_adapter, best_candidate, train_data[: min(500, len(train_data))])
+
+    from gepa.core.state import GEPAState
+
+    gepa_state = GEPAState.load(str(args.run_dir))
+    final_iteration = gepa_state.i + 1
+    final_rollouts = max(int(result.total_metric_calls or 0), 1)
 
     summary = {
         "best_val_em": best_val_em,
         "best_train_em_sample500": best_train_em,
         "seed_val_em": seed_val_em,
-        "total_metric_calls": result.total_metric_calls,
+        "total_metric_calls": final_rollouts,
+        "final_iteration": final_iteration,
         "best_candidate_keys": list(best_candidate.keys()),
     }
     summary_path = args.run_dir / "gepa_summary.json"
@@ -281,7 +377,7 @@ def main() -> None:
     prompt_path = args.run_dir / "best_instruction_prompt.txt"
     prompt_path.write_text(best_candidate[INSTRUCTION_COMPONENT])
 
-    final_step = max(result.total_metric_calls, 1)
+    # GEPA logs with step=iteration; rollouts x-axis comes from total_metric_calls.
     log_gepa_wandb_metrics(
         {
             "val/em": best_val_em,
@@ -290,10 +386,12 @@ def main() -> None:
             "training/reward": best_train_em,
             "training/em": best_train_em,
             "seed/val_em": seed_val_em,
+            "total_metric_calls": final_rollouts,
+            "iteration": final_iteration,
         },
-        step=final_step,
+        step=final_iteration,
         project=WANDB_PROJECT,
-        experiment_name=WANDB_EXPERIMENT,
+        experiment_name=variant.wandb_experiment,
         run_dir=args.run_dir,
         config=wandb_config,
         wandb_dir=_RECIPE_DIR / "wandb",

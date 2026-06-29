@@ -1,0 +1,101 @@
+#!/bin/bash
+#BSUB -J train_searchr1_gepa_qwen25_3b_rewrite
+#BSUB -G grp_runtime
+#BSUB -q normal
+#BSUB -n 72
+#BSUB -R "span[hosts=1] rusage[mem=128GB]"
+#BSUB -gpu "num=8:mode=shared:j_exclusive=yes:gmodel=NVIDIAH10080GBHBM3"
+#BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_gepa_qwen25_3b_rewrite.%J.out
+#BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_gepa_qwen25_3b_rewrite.%J.err
+
+# GEPA prompt optimization for Search-R1 with <rewrite> (HotpotQA, Qwen2.5-3B-Instruct).
+# Compares frozen-weight reflective prompt evolution with rewrite capability against
+# GRPO rewrite variants. Requires serve/serve_retrieval_gepa_rewrite.bsub (BM25).
+#
+# Submit serve first, then train with an LSF dependency:
+#   SERVE_JID=$(bsub < serve/serve_retrieval_gepa_rewrite.bsub | sed -n 's/.*Job <\([0-9]*\)>.*/\1/p')
+#   bsub -w "started(${SERVE_JID})" < train/train_gepa_rewrite.bsub
+
+set -euo pipefail
+
+PPLRL=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl
+PYTHON=${PPLRL}/.venv/bin/python
+RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1
+ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_gepa_rewrite.txt
+VLLM_PORT=8102
+VLLM_ADDR_FILE=${RECIPE}/outputs/vllm_gepa_rewrite_addr.txt
+VLLM_DATA_PARALLEL_SIZE=${VLLM_DATA_PARALLEL_SIZE:-8}
+GEPA_ROLLOUT_CONCURRENCY=${GEPA_ROLLOUT_CONCURRENCY:-8}
+
+set -a
+# shellcheck source=/dev/null
+source "${RECIPE}/.env"
+set +a
+
+GEPA_RUN_DIR=${RECIPE}/outputs/gepa_qwen25_3b_rewrite
+
+export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
+CACHE_ROOT=/proj/inf-scaling/zwhong/.cache
+export HF_HOME="${CACHE_ROOT}/huggingface"
+export TRITON_CACHE_DIR="${CACHE_ROOT}/triton"
+export XDG_CACHE_HOME="${CACHE_ROOT}/xdg"
+export PYTHONPATH=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning:${RECIPE}/scripts:${PYTHONPATH:-}
+
+mkdir -p "${TRITON_CACHE_DIR}" "${XDG_CACHE_HOME}" "${RECIPE}/outputs"
+
+echo "Waiting for BM25 retrieval server at ${ADDR_FILE} ..."
+until [ -f "${ADDR_FILE}" ]; do sleep 5; done
+export RETRIEVAL_SERVER_URL=$(cat "${ADDR_FILE}")
+echo "Retrieval server ready: ${RETRIEVAL_SERVER_URL}"
+
+rm -f "${VLLM_ADDR_FILE}"
+echo "Starting vLLM OpenAI server on port ${VLLM_PORT} (tp=1 dp=${VLLM_DATA_PARALLEL_SIZE}) ..."
+${PYTHON} -m vllm.entrypoints.openai.api_server \
+    --model Qwen/Qwen2.5-3B-Instruct \
+    --served-model-name Qwen/Qwen2.5-3B-Instruct \
+    --host 0.0.0.0 \
+    --port "${VLLM_PORT}" \
+    --tensor-parallel-size 1 \
+    --data-parallel-size "${VLLM_DATA_PARALLEL_SIZE}" \
+    --gpu-memory-utilization 0.85 \
+    --max-model-len 8192 \
+    --disable-log-requests &
+VLLM_PID=$!
+
+cleanup() {
+    kill "${VLLM_PID}" 2>/dev/null || true
+    rm -f "${VLLM_ADDR_FILE}"
+}
+trap cleanup EXIT
+
+echo "Waiting for vLLM health check ..."
+for _ in $(seq 1 120); do
+    if curl -sf "http://127.0.0.1:${VLLM_PORT}/health" >/dev/null 2>&1; then
+        echo "http://127.0.0.1:${VLLM_PORT}/v1" > "${VLLM_ADDR_FILE}"
+        break
+    fi
+    if ! kill -0 "${VLLM_PID}" 2>/dev/null; then
+        echo "vLLM server exited unexpectedly" >&2
+        exit 1
+    fi
+    sleep 5
+done
+
+if [ ! -f "${VLLM_ADDR_FILE}" ]; then
+    echo "Timed out waiting for vLLM server" >&2
+    exit 1
+fi
+
+export OPENAI_API_BASE=$(cat "${VLLM_ADDR_FILE}")
+export OPENAI_API_KEY=${OPENAI_API_KEY:-token-abc123}
+export GEPA_MAX_METRIC_CALLS=${GEPA_MAX_METRIC_CALLS:-1500}
+export GEPA_ROLLOUT_CONCURRENCY=${GEPA_ROLLOUT_CONCURRENCY}
+export GEPA_REFLECTION_LM=${GEPA_REFLECTION_LM:-openai/Qwen/Qwen2.5-3B-Instruct}
+export LITELLM_API_BASE=${OPENAI_API_BASE}
+export LITELLM_API_KEY=${OPENAI_API_KEY}
+
+echo "vLLM ready: ${OPENAI_API_BASE}"
+echo "GEPA rewrite max_metric_calls=${GEPA_MAX_METRIC_CALLS} rollout_concurrency=${GEPA_ROLLOUT_CONCURRENCY}"
+
+cd "${RECIPE}"
+${PYTHON} search_r1_gepa/train_gepa.py --rewrite --run-dir "${GEPA_RUN_DIR}"
