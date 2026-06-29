@@ -56,7 +56,7 @@ def extract_action(response: str) -> Tuple[Optional[str], str]:
     return action, content
 
 
-def execute_response(response: str, do_search: bool = True) -> str:
+def execute_response(response: str, do_search: bool = True, *, retry_forever: bool = False) -> str:
     """
     Execute predictions across multiple environments.
     """
@@ -64,7 +64,7 @@ def execute_response(response: str, do_search: bool = True) -> str:
     if action == "answer":
         return ""
     elif action == "search":
-        search_result = retrieve_doc(content) if do_search else ""
+        search_result = retrieve_doc(content, retry_forever=retry_forever) if do_search else ""
         return f"\n\n<information>{search_result}</information>\n\n"
     else:
         return (
@@ -82,6 +82,8 @@ _RETRIEVAL_CONNECT_ERRORS = (
 _RETRIEVAL_MAX_RETRIES = 3
 _RETRIEVAL_BACKOFF_BASE_S = 1.0
 _RETRIEVAL_REQUEST_TIMEOUT_S = 30.0
+_RETRIEVAL_TRAIN_RETRY_SLEEP_S = 45.0
+_RETRIEVAL_REFRESH_EVERY_N_FAILURES = 5
 
 _cached_retrieval_url: Optional[str] = None
 _cached_addr_file: Optional[str] = None
@@ -178,19 +180,77 @@ def _retrieval_url() -> str:
     return _ensure_retrieval_cache()
 
 
-def _retrieval_post(query: str) -> requests.Response:
+def _is_transient_retrieval_error(exc: Exception) -> bool:
+    if isinstance(exc, _RETRIEVAL_CONNECT_ERRORS):
+        return True
+    if isinstance(exc, requests.exceptions.HTTPError):
+        response = exc.response
+        return response is not None and response.status_code >= 500
+    if isinstance(exc, (ValueError, requests.exceptions.JSONDecodeError)):
+        return True
+    return False
+
+
+def _validate_retrieval_response(response: requests.Response) -> None:
+    try:
+        json_resp = response.json()
+    except requests.exceptions.JSONDecodeError as exc:
+        raise ValueError(f"retrieval response is not valid JSON: {exc}") from exc
+    if not isinstance(json_resp, dict):
+        raise ValueError("retrieval response JSON is not an object")
+    passages = json_resp.get("passages")
+    if not isinstance(passages, list):
+        raise ValueError("retrieval response missing passages list")
+
+
+def _retrieval_post_once(query: str, url: str) -> requests.Response:
+    response = requests.post(
+        f"{url}/search",
+        json={"query": query},
+        timeout=_RETRIEVAL_REQUEST_TIMEOUT_S,
+    )
+    response.raise_for_status()
+    _validate_retrieval_response(response)
+    return response
+
+
+def _retrieval_post(query: str, *, retry_forever: bool = False) -> requests.Response:
+    if retry_forever:
+        attempt = 0
+        while True:
+            attempt += 1
+            url = _retrieval_url()
+            try:
+                response = _retrieval_post_once(query, url)
+            except Exception as exc:
+                if not _is_transient_retrieval_error(exc):
+                    raise
+                if attempt % _RETRIEVAL_REFRESH_EVERY_N_FAILURES == 0:
+                    _refresh_retrieval_url()
+                logger.warning(
+                    "Retrieval request failed during training (attempt %d) at %s: %s; "
+                    "sleeping %.1fs and retrying until the server recovers",
+                    attempt,
+                    url,
+                    exc,
+                    _RETRIEVAL_TRAIN_RETRY_SLEEP_S,
+                )
+                time.sleep(_RETRIEVAL_TRAIN_RETRY_SLEEP_S)
+                continue
+            if attempt > 1:
+                logger.info(
+                    "Retrieval recovered at %s after %d failed attempt(s)",
+                    url,
+                    attempt - 1,
+                )
+            return response
+
     url = _retrieval_url()
     last_exc: Optional[Exception] = None
 
     for attempt in range(_RETRIEVAL_MAX_RETRIES):
         try:
-            response = requests.post(
-                f"{url}/search",
-                json={"query": query},
-                timeout=_RETRIEVAL_REQUEST_TIMEOUT_S,
-            )
-            response.raise_for_status()
-            return response
+            return _retrieval_post_once(query, url)
         except _RETRIEVAL_CONNECT_ERRORS as exc:
             last_exc = exc
             if attempt + 1 < _RETRIEVAL_MAX_RETRIES:
@@ -211,13 +271,7 @@ def _retrieval_post(query: str) -> requests.Response:
     _refresh_retrieval_url()
     retry_url = _retrieval_url()
     try:
-        response = requests.post(
-            f"{retry_url}/search",
-            json={"query": query},
-            timeout=_RETRIEVAL_REQUEST_TIMEOUT_S,
-        )
-        response.raise_for_status()
-        return response
+        return _retrieval_post_once(query, retry_url)
     except Exception as exc:
         logger.error("Retrieval request failed after addr-file refresh at %s: %s", retry_url, exc)
         if last_exc is not None:
@@ -225,8 +279,8 @@ def _retrieval_post(query: str) -> requests.Response:
         raise
 
 
-def retrieve_doc(query: str) -> str:
-    response = _retrieval_post(query)
+def retrieve_doc(query: str, *, retry_forever: bool = False) -> str:
+    response = _retrieval_post(query, retry_forever=retry_forever)
     json_resp: Dict[str, Any] = cast(Dict[str, Any], response.json())
     passages: List[str] = cast(List[str], json_resp["passages"])
     # Drop the trailing "Other retrieved pages have titles: …" summary entry.
@@ -310,7 +364,9 @@ class SearchR1Agent(LitAgent[Dict[str, Any]]):
                 )
                 valid_turn_response = postprocess_response(turn_response)
                 rollout_content += valid_turn_response
-                turn_env_feedback = execute_response(valid_turn_response)
+                turn_env_feedback = execute_response(
+                    valid_turn_response, retry_forever=rollout.mode == "train"
+                )
                 if len(turn_env_feedback) == 0:
                     finished_flag = True
                 else:
@@ -450,7 +506,7 @@ class SearchR1RewriteAgent(LitAgent[Dict[str, Any]]):
                 if action == "answer":
                     finished_flag = True
                 elif action == "search":
-                    passages = _retrieve_passages(content)
+                    passages = _retrieve_passages(content, retry_forever=rollout.mode == "train")
                     retrieved_passages.append(passages)
                     formatted = passages2string(passages[:3])
                     turn_env_feedback = f"\n\n<information>{formatted}</information>\n\n"
@@ -498,9 +554,9 @@ class SearchR1RewriteAgent(LitAgent[Dict[str, Any]]):
         return None
 
 
-def _retrieve_passages(query: str) -> List[str]:
+def _retrieve_passages(query: str, *, retry_forever: bool = False) -> List[str]:
     """Retrieve raw passages (before formatting) for reward computation."""
-    response = _retrieval_post(query)
+    response = _retrieval_post(query, retry_forever=retry_forever)
     json_resp: Dict[str, Any] = cast(Dict[str, Any], response.json())
     passages: List[str] = cast(List[str], json_resp["passages"])
     return [p for p in passages if not p.startswith("Other retrieved pages")][:3]
