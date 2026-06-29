@@ -4,8 +4,8 @@ Usage:
     python eval_gepa_prompt.py <prompt_file> [--metric-calls N]
 
 Requires OPENAI_API_BASE (vLLM) and RETRIEVAL_SERVER_URL (BM25). Logs test/em and
-test/reward to a dedicated eval WandB run (resume via WANDB_RUN_ID or
-``{run_dir}/wandb_eval_run_id.txt``).
+test/reward to the dedicated eval WandB run (``wandb_eval_run_id.txt``) and, when
+``wandb_run_id.txt`` exists, to the GEPA training run at ``metric_calls`` step.
 
 Environment:
     GEPA_ROLLOUT_CONCURRENCY — parallel Search-R1 rollouts (default: 1; eval_gepa_prompt.bsub sets 8)
@@ -37,12 +37,15 @@ from search_r1_gepa.search_r1_gepa_adapter import (  # noqa: E402
 from search_r1_gepa.train_gepa import (  # noqa: E402
     DATA_SOURCE,
     MODEL_NAME,
-    WANDB_EXPERIMENT,
     WANDB_PROJECT,
+    default_run_dir,
     evaluate_split,
+    resolve_gepa_variant,
     resolve_rollout_concurrency,
 )
 from wandb_run import (  # noqa: E402
+    load_wandb_run_id,
+    log_gepa_wandb_metrics,
     resolve_wandb_eval_run_id,
     save_wandb_eval_run_id,
     validate_wandb_run_id,
@@ -81,8 +84,13 @@ def main() -> None:
     parser.add_argument(
         "--run-dir",
         type=Path,
-        default=_RECIPE_DIR / "outputs" / "gepa_qwen25_3b",
+        default=None,
         help="GEPA run directory containing wandb_eval_run_id.txt",
+    )
+    parser.add_argument(
+        "--rewrite",
+        action="store_true",
+        help="Use <rewrite> turn during rollouts (must match training variant)",
     )
     parser.add_argument("--batch-size", type=int, default=20)
     parser.add_argument(
@@ -93,6 +101,10 @@ def main() -> None:
     )
     parser.add_argument("--wandb-run-id", default=None, help="Override eval WandB run id (default: auto-resolve)")
     args = parser.parse_args()
+
+    variant = resolve_gepa_variant(rewrite=args.rewrite)
+    if args.run_dir is None:
+        args.run_dir = default_run_dir(_RECIPE_DIR, rewrite=args.rewrite)
 
     api_base = os.environ.get("OPENAI_API_BASE", "")
     if not api_base:
@@ -112,7 +124,12 @@ def main() -> None:
     logger.info("Rollout concurrency=%d", rollout_concurrency)
 
     llm_call = make_openai_llm_call(base_url=api_base, model=MODEL_NAME, default_temperature=0.0)
-    adapter = SearchR1GEPAAdapter(llm_call, eval_mode="val", rollout_concurrency=rollout_concurrency)
+    adapter = SearchR1GEPAAdapter(
+        llm_call,
+        eval_mode="val",
+        rollout_concurrency=rollout_concurrency,
+        use_rewrite=variant.use_rewrite,
+    )
     test_em = evaluate_split(adapter, candidate, test_data, batch_size=args.batch_size)
 
     summary = {
@@ -120,8 +137,10 @@ def main() -> None:
         "metric_calls": args.metric_calls,
         "prompt_file": str(args.prompt_file),
         "n_test": len(test_data),
+        "variant": variant.name,
+        "use_rewrite": variant.use_rewrite,
     }
-    summary_path = args.data_dir / "outputs" / "gepa_qwen25_3b" / f"test_eval_m{args.metric_calls}.json"
+    summary_path = args.run_dir / f"test_eval_m{args.metric_calls}.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(json.dumps(summary, indent=2))
     logger.info("Full test EM=%.4f (n=%d), saved to %s", test_em, len(test_data), summary_path)
@@ -138,8 +157,13 @@ def main() -> None:
         )
         wandb_init_kwargs: dict[str, object] = {
             "project": WANDB_PROJECT,
-            "name": WANDB_EXPERIMENT,
-            "config": {"eval_type": "full_test", "metric_calls": args.metric_calls},
+            "name": variant.wandb_experiment,
+            "config": {
+                "eval_type": "full_test",
+                "metric_calls": args.metric_calls,
+                "variant": variant.name,
+                "use_rewrite": variant.use_rewrite,
+            },
         }
         if os.environ.get("WANDB_ENTITY"):
             wandb_init_kwargs["entity"] = os.environ["WANDB_ENTITY"]
@@ -163,6 +187,24 @@ def main() -> None:
         wandb.finish()
     except ImportError:
         logger.warning("wandb not installed; skipping WandB logging")
+
+    if load_wandb_run_id(args.run_dir):
+        log_gepa_wandb_metrics(
+            {
+                "test/em": test_em,
+                "test/reward": test_em,
+            },
+            step=args.metric_calls,
+            project=WANDB_PROJECT,
+            experiment_name=variant.wandb_experiment,
+            run_dir=args.run_dir,
+            finish=True,
+        )
+        logger.info(
+            "Logged test/em=%.4f to GEPA training WandB run at metric_calls=%d",
+            test_em,
+            args.metric_calls,
+        )
 
 
 if __name__ == "__main__":

@@ -34,6 +34,7 @@ from gepa_full_eval import (  # noqa: E402
     load_training_session,
     maybe_trigger_full_eval,
     save_gepa_prompt,
+    sync_monitor_state_from_full_eval,
 )
 
 # Absolute checkpoint root — must match CHECKPOINT_ROOT in train_search_r1_agent.py.
@@ -82,13 +83,26 @@ EXPERIMENTS = {
     },
 }
 
-GEPA_EXPERIMENT = {
-    "name": "gepa_qwen25_3b",
-    "job_prefix": "train_gepa_qwen25_3b",
-    "eval_job_tag": "qwen25_3b_gepa",
-    "run_dir": OUTPUTS_DIR / "gepa_qwen25_3b",
-    "addr_file": "bm25_server_addr_eval_gepa.txt",
-}
+GEPA_EXPERIMENTS = [
+    {
+        "name": "gepa_qwen25_3b",
+        "job_prefix": "train_gepa_qwen25_3b",
+        "eval_job_tag": "qwen25_3b_gepa",
+        "run_dir": OUTPUTS_DIR / "gepa_qwen25_3b",
+        "addr_file": "bm25_server_addr_eval_gepa.txt",
+        "run_dir_rel": "outputs/gepa_qwen25_3b",
+        "use_rewrite": False,
+    },
+    {
+        "name": "gepa_qwen25_3b_rewrite",
+        "job_prefix": "train_gepa_qwen25_3b_rewrite",
+        "eval_job_tag": "qwen25_3b_gepa_rewrite",
+        "run_dir": OUTPUTS_DIR / "gepa_qwen25_3b_rewrite",
+        "addr_file": "bm25_server_addr_eval_gepa_rewrite.txt",
+        "run_dir_rel": "outputs/gepa_qwen25_3b_rewrite",
+        "use_rewrite": True,
+    },
+]
 
 VAL_SCORE_PATTERN = re.compile(r"step:(\d+)\s.*?val/reward:([\d.]+)")
 GEPA_SEED_VAL_PATTERN = re.compile(r"Seed val/em=([\d.]+)")
@@ -326,16 +340,29 @@ def maybe_submit_grpo_eval(name: str, exp: dict, state: ExperimentState, dry_run
     return False
 
 
-def monitor_gepa(states: Dict[str, ExperimentState], dry_run: bool) -> bool:
+def monitor_gepa(states: Dict[str, ExperimentState], gepa_exp: dict[str, object], dry_run: bool) -> bool:
     """Poll GEPA gepa_state.bin and training stderr. Returns True if state was updated."""
-    name = GEPA_EXPERIMENT["name"]
+    name = str(gepa_exp["name"])
     state = states[name]
-    run_dir = Path(GEPA_EXPERIMENT["run_dir"])
+    run_dir = Path(gepa_exp["run_dir"])
     updated = False
 
     session = load_training_session(run_dir)
     if session is None:
         return updated
+
+    (
+        state.best_score,
+        state.best_step,
+        state.best_program_idx,
+        state.eval_submitted_steps,
+    ) = sync_monitor_state_from_full_eval(
+        state.best_score,
+        state.best_step,
+        state.best_program_idx,
+        state.eval_submitted_steps,
+        run_dir,
+    )
 
     # Prefer authoritative gepa_state.bin when updated during the current training session.
     state_path = run_dir / "gepa_state.bin"
@@ -359,21 +386,23 @@ def monitor_gepa(states: Dict[str, ExperimentState], dry_run: bool) -> bool:
                         f"  *** NEW BEST for {name}: {score:.4f} at metric_calls={metric_calls} ***",
                         flush=True,
                     )
-                if maybe_trigger_full_eval(
-                    run_dir=run_dir,
-                    dev_score=score,
-                    metric_calls=metric_calls,
-                    program_idx=program_idx,
-                    prompt=prompt,
-                    eval_job_tag=GEPA_EXPERIMENT["eval_job_tag"],
-                    addr_file=GEPA_EXPERIMENT["addr_file"],
-                    dry_run=dry_run,
-                ):
-                    updated = True
-                state.eval_submitted_steps = list(load_full_eval_state(run_dir).submitted_metric_calls)
+                    if maybe_trigger_full_eval(
+                        run_dir=run_dir,
+                        dev_score=score,
+                        metric_calls=metric_calls,
+                        program_idx=program_idx,
+                        prompt=prompt,
+                        eval_job_tag=str(gepa_exp["eval_job_tag"]),
+                        addr_file=str(gepa_exp["addr_file"]),
+                        run_dir_rel=str(gepa_exp["run_dir_rel"]),
+                        use_rewrite=bool(gepa_exp["use_rewrite"]),
+                        dry_run=dry_run,
+                    ):
+                        updated = True
+                    state.eval_submitted_steps = list(load_full_eval_state(run_dir).submitted_metric_calls)
 
     # Fallback: seed val from stderr before gepa_state.bin exists for this session.
-    err_log = find_latest_err_log(OUTPUTS_DIR, GEPA_EXPERIMENT["job_prefix"])
+    err_log = find_latest_err_log(OUTPUTS_DIR, str(gepa_exp["job_prefix"]))
     if err_log is None:
         return updated
 
@@ -403,7 +432,12 @@ def monitor_gepa(states: Dict[str, ExperimentState], dry_run: bool) -> bool:
                 try:
                     from search_r1_gepa.search_r1_gepa_adapter import default_seed_candidate
 
-                    saved = save_gepa_prompt_snapshot(run_dir, 0, 0, default_seed_candidate())
+                    saved = save_gepa_prompt_snapshot(
+                        run_dir,
+                        0,
+                        0,
+                        default_seed_candidate(use_rewrite=bool(gepa_exp["use_rewrite"])),
+                    )
                     if saved is not None:
                         prompt_path = saved
                 except (ImportError, ModuleNotFoundError) as exc:
@@ -422,8 +456,10 @@ def monitor_gepa(states: Dict[str, ExperimentState], dry_run: bool) -> bool:
                     metric_calls=metric_calls,
                     program_idx=program_idx,
                     prompt=prompt,
-                    eval_job_tag=GEPA_EXPERIMENT["eval_job_tag"],
-                    addr_file=GEPA_EXPERIMENT["addr_file"],
+                    eval_job_tag=str(gepa_exp["eval_job_tag"]),
+                    addr_file=str(gepa_exp["addr_file"]),
+                    run_dir_rel=str(gepa_exp["run_dir_rel"]),
+                    use_rewrite=bool(gepa_exp["use_rewrite"]),
                     dry_run=dry_run,
                 )
 
@@ -437,11 +473,16 @@ def monitor_loop(poll_interval: int, grpo_outputs_dir: Path, dry_run: bool) -> N
     for name in EXPERIMENTS:
         if name not in states:
             states[name] = ExperimentState()
-    if GEPA_EXPERIMENT["name"] not in states:
-        states[GEPA_EXPERIMENT["name"]] = ExperimentState()
+    for gepa_exp in GEPA_EXPERIMENTS:
+        if gepa_exp["name"] not in states:
+            states[gepa_exp["name"]] = ExperimentState()
 
-    n_total = len(EXPERIMENTS) + 1
-    print(f"Monitoring {n_total} experiments ({len(EXPERIMENTS)} GRPO + 1 GEPA), polling every {poll_interval}s", flush=True)
+    n_total = len(EXPERIMENTS) + len(GEPA_EXPERIMENTS)
+    print(
+        f"Monitoring {n_total} experiments ({len(EXPERIMENTS)} GRPO + {len(GEPA_EXPERIMENTS)} GEPA), "
+        f"polling every {poll_interval}s",
+        flush=True,
+    )
     print(f"GRPO outputs: {grpo_outputs_dir}", flush=True)
     print(f"GEPA outputs: {OUTPUTS_DIR}", flush=True)
     print(
@@ -451,7 +492,8 @@ def monitor_loop(poll_interval: int, grpo_outputs_dir: Path, dry_run: bool) -> N
 
     while True:
         updated = monitor_grpo(states, grpo_outputs_dir, dry_run)
-        updated = monitor_gepa(states, dry_run) or updated
+        for gepa_exp in GEPA_EXPERIMENTS:
+            updated = monitor_gepa(states, gepa_exp, dry_run) or updated
         for grpo_name, grpo_exp in EXPERIMENTS.items():
             if maybe_submit_grpo_eval(grpo_name, grpo_exp, states[grpo_name], dry_run):
                 updated = True

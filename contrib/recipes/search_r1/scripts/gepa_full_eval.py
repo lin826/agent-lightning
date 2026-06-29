@@ -1,9 +1,12 @@
 """Submit full test.parquet eval when GEPA dev-subset validation hits a new best.
 
-GEPA optimizes against ``test_dev.parquet`` (200 hotpotqa examples). Whenever
-``best_score_on_valset`` improves, persist the best prompt and submit an LSF
-eval job (``eval/eval_gepa_prompt.bsub``) to score it on ``test.parquet``
-(7405 examples).
+GEPA optimizes against ``test_dev.parquet`` (200 hotpotqa examples). Whenever the
+historical dev-subset best (``best_score_on_valset`` / ``best_valset_agg_score``)
+improves, persist the best program prompt from ``gepa_state.bin`` and submit an LSF
+eval job (``eval/eval_gepa_prompt.bsub``) to score it on ``test.parquet`` (7405 examples).
+
+Per-candidate ``val_program_average`` scores do not trigger eval — only record-breaking
+aggregate dev bests, matching GRPO's ``val/reward`` record semantics.
 
 Used from ``train_gepa.py`` (in-process trigger) and ``monitor_best_and_eval.py``
 (fallback polling).
@@ -135,7 +138,7 @@ def bootstrap_full_eval_state(
     if not submitted and float(entry.get("best_score", -1.0)) < 0:
         return None
     session = load_training_session(run_dir)
-    session_id = session.session_id if session is not None else state.training_session_id
+    session_id = session.session_id if session is not None else ""
     state = FullEvalState(
         best_dev_score=float(entry.get("best_score", -1.0)),
         best_metric_calls=int(entry.get("best_step", -1)),
@@ -223,6 +226,8 @@ def submit_gepa_eval_job(
     metric_calls: int,
     prompt_path: Path,
     addr_file: str,
+    run_dir_rel: str = "outputs/gepa_qwen25_3b",
+    rewrite_flag: str = "",
     dry_run: bool = False,
 ) -> str | None:
     """Generate and submit a bsub GEPA full-test eval job. Returns LSF job id."""
@@ -235,6 +240,8 @@ def submit_gepa_eval_job(
     script = script.replace("%METRIC_CALLS%", str(metric_calls))
     script = script.replace("%PROMPT_PATH%", str(prompt_path))
     script = script.replace("%ADDR_FILE%", addr_file)
+    script = script.replace("%RUN_DIR_REL%", run_dir_rel)
+    script = script.replace("%REWRITE_FLAG%", rewrite_flag)
 
     tmp_bsub = EVAL_GENERATED_DIR / f"eval_{eval_job_tag}_m{metric_calls}.bsub"
     EVAL_GENERATED_DIR.mkdir(parents=True, exist_ok=True)
@@ -259,6 +266,18 @@ def submit_gepa_eval_job(
     return None
 
 
+def resolve_best_metric_calls(run_dir: Path, best_score: float, fallback: int) -> int:
+    """Return the WandB ``metric_calls`` step for a dev-subset best score.
+
+  Prefer the step recorded in ``full_eval_state.json`` when the score matches so
+  monitor/end-of-run triggers log ``test/em`` at the same step as in-process triggers.
+    """
+    fe_state = load_full_eval_state(run_dir)
+    if fe_state.best_metric_calls >= 0 and abs(fe_state.best_dev_score - best_score) < 1e-9:
+        return fe_state.best_metric_calls
+    return fallback
+
+
 def load_best_from_gepa_state(run_dir: Path) -> tuple[float, int, int, dict[str, str]] | None:
     """Load best prompt/score from ``gepa_state.bin`` if present."""
     state_path = run_dir / "gepa_state.bin"
@@ -272,12 +291,149 @@ def load_best_from_gepa_state(run_dir: Path) -> tuple[float, int, int, dict[str,
         policy = FullEvaluationPolicy()
         best_idx = policy.get_best_program(state)
         best_score = policy.get_valset_score(best_idx, state)
-        metric_calls = state.total_num_evals
+        metric_calls = resolve_best_metric_calls(run_dir, best_score, state.total_num_evals)
         prompt = state.program_candidates[best_idx]
         return best_score, metric_calls, best_idx, prompt
     except Exception as exc:
         logger.warning("Failed to load gepa_state.bin from %s: %s", run_dir, exc)
         return None
+
+
+def sync_monitor_state_from_full_eval(
+    monitor_best_score: float,
+    monitor_best_step: int,
+    monitor_best_program_idx: int,
+    monitor_submitted_steps: list[int],
+    run_dir: Path,
+) -> tuple[float, int, int, list[int]]:
+    """Align monitor tracking with ``full_eval_state.json`` for one GEPA run."""
+    fe_state = load_full_eval_state(run_dir)
+    best_score = monitor_best_score
+    best_step = monitor_best_step
+    best_program_idx = monitor_best_program_idx
+    submitted = list(monitor_submitted_steps)
+    if fe_state.best_dev_score > best_score:
+        best_score = fe_state.best_dev_score
+        best_step = fe_state.best_metric_calls
+        best_program_idx = fe_state.best_program_idx
+    if fe_state.submitted_metric_calls:
+        submitted = list(fe_state.submitted_metric_calls)
+    return best_score, best_step, best_program_idx, submitted
+
+
+_BEST_VAL_SCORE_KEYS = ("best_score_on_valset", "best_valset_agg_score", "base_program_full_valset_score")
+
+
+def _resolve_program_prompt(
+    run_dir: Path,
+    program_idx: int,
+    *,
+    use_rewrite: bool,
+    prefer_best_from_state: bool = False,
+) -> dict[str, str] | None:
+    """Resolve the instruction prompt to evaluate for a full-test job."""
+    if prefer_best_from_state:
+        loaded = load_best_from_gepa_state(run_dir)
+        if loaded is not None:
+            return loaded[3]
+
+    state_path = run_dir / "gepa_state.bin"
+    if state_path.is_file():
+        try:
+            from gepa.core.state import GEPAState
+
+            state = GEPAState.load(str(run_dir))
+            candidates = state.program_candidates
+            if 0 <= program_idx < len(candidates):
+                return candidates[program_idx]
+            if candidates:
+                return candidates[0]
+        except Exception as exc:
+            logger.warning("Failed to read program %d from gepa_state.bin: %s", program_idx, exc)
+
+    try:
+        from search_r1_gepa.search_r1_gepa_adapter import default_seed_candidate
+
+        return default_seed_candidate(use_rewrite=use_rewrite)
+    except (ImportError, ModuleNotFoundError):
+        logger.warning("Cannot resolve prompt for full-test eval trigger")
+        return None
+
+
+def collect_full_eval_trigger_candidates(
+    metrics: dict[str, Any],
+    run_dir: Path,
+    *,
+    step: int | None,
+    use_rewrite: bool,
+) -> list[tuple[float, int, int, dict[str, str]]]:
+    """Return dev-subset historical-best candidates that may warrant full-test eval.
+
+    Mirrors GRPO's ``val/reward`` record-break semantics: only aggregate dev-subset
+    bests (``best_score_on_valset`` and related keys) trigger eval, not per-candidate
+    ``val_program_average`` scores for non-record candidates.
+    """
+    metric_calls = int(metrics.get("total_metric_calls", step if step is not None else 0))
+    candidates: list[tuple[float, int, int, dict[str, str]]] = []
+
+    for key in _BEST_VAL_SCORE_KEYS:
+        if key not in metrics:
+            continue
+        dev_score = float(metrics[key])
+        loaded = load_best_from_gepa_state(run_dir)
+        if loaded is not None:
+            program_idx = loaded[2]
+            prompt = loaded[3]
+        else:
+            program_idx = int(
+                metrics.get(
+                    "best_program_as_per_agg_score_valset",
+                    metrics.get("new_program_idx", 0),
+                )
+            )
+            prompt = _resolve_program_prompt(
+                run_dir,
+                program_idx,
+                use_rewrite=use_rewrite,
+                prefer_best_from_state=True,
+            )
+        if prompt is not None:
+            candidates.append((dev_score, metric_calls, program_idx, prompt))
+        break
+
+    return candidates
+
+
+def maybe_trigger_full_eval_from_metrics(
+    metrics: dict[str, Any],
+    run_dir: Path,
+    *,
+    step: int | None,
+    eval_job_tag: str = DEFAULT_EVAL_JOB_TAG,
+    addr_file: str = DEFAULT_ADDR_FILE,
+    run_dir_rel: str = "outputs/gepa_qwen25_3b",
+    use_rewrite: bool = False,
+    dry_run: bool = False,
+) -> bool:
+    """Submit full-test eval when logged metrics include a new dev-subset EM record."""
+    triggered = False
+    for dev_score, metric_calls, program_idx, prompt in collect_full_eval_trigger_candidates(
+        metrics, run_dir, step=step, use_rewrite=use_rewrite
+    ):
+        if maybe_trigger_full_eval(
+            run_dir=run_dir,
+            dev_score=dev_score,
+            metric_calls=metric_calls,
+            program_idx=program_idx,
+            prompt=prompt,
+            eval_job_tag=eval_job_tag,
+            addr_file=addr_file,
+            run_dir_rel=run_dir_rel,
+            use_rewrite=use_rewrite,
+            dry_run=dry_run,
+        ):
+            triggered = True
+    return triggered
 
 
 def maybe_trigger_full_eval(
@@ -289,6 +445,8 @@ def maybe_trigger_full_eval(
     prompt: dict[str, str],
     eval_job_tag: str = DEFAULT_EVAL_JOB_TAG,
     addr_file: str = DEFAULT_ADDR_FILE,
+    run_dir_rel: str = "outputs/gepa_qwen25_3b",
+    use_rewrite: bool = False,
     dry_run: bool = False,
 ) -> bool:
     """Submit full-test eval when ``dev_score`` beats the tracked dev-subset best."""
@@ -300,6 +458,14 @@ def maybe_trigger_full_eval(
     state = load_full_eval_state(run_dir)
     if state.training_session_id != session.session_id:
         state = FullEvalState(training_session_id=session.session_id)
+    if program_idx < 0:
+        loaded = load_best_from_gepa_state(run_dir)
+        if loaded is not None:
+            program_idx = loaded[2]
+            prompt = loaded[3]
+        else:
+            program_idx = 0
+
     if dev_score <= state.best_dev_score:
         return False
     if metric_calls in state.submitted_metric_calls:
@@ -331,6 +497,8 @@ def maybe_trigger_full_eval(
         metric_calls=metric_calls,
         prompt_path=prompt_path,
         addr_file=addr_file,
+        run_dir_rel=run_dir_rel,
+        rewrite_flag="--rewrite" if use_rewrite else "",
         dry_run=dry_run,
     )
     if job_id or dry_run:
@@ -348,6 +516,8 @@ def maybe_trigger_full_eval_from_state_file(
     *,
     eval_job_tag: str = DEFAULT_EVAL_JOB_TAG,
     addr_file: str = DEFAULT_ADDR_FILE,
+    run_dir_rel: str = "outputs/gepa_qwen25_3b",
+    use_rewrite: bool = False,
     dry_run: bool = False,
 ) -> bool:
     """Load ``gepa_state.bin`` and trigger full-test eval if dev-subset best improved."""
@@ -363,6 +533,8 @@ def maybe_trigger_full_eval_from_state_file(
         prompt=prompt,
         eval_job_tag=eval_job_tag,
         addr_file=addr_file,
+        run_dir_rel=run_dir_rel,
+        use_rewrite=use_rewrite,
         dry_run=dry_run,
     )
 
@@ -372,6 +544,8 @@ def install_gepa_full_eval_trigger(
     run_dir: Path,
     eval_job_tag: str = DEFAULT_EVAL_JOB_TAG,
     addr_file: str = DEFAULT_ADDR_FILE,
+    run_dir_rel: str = "outputs/gepa_qwen25_3b",
+    use_rewrite: bool = False,
     dry_run: bool | None = None,
 ) -> None:
     """Patch GEPA ``ExperimentTracker.log_metrics`` to submit full-test eval on dev-subset records."""
@@ -387,44 +561,14 @@ def install_gepa_full_eval_trigger(
 
     def log_metrics(self: ExperimentTracker, metrics: dict[str, Any], step: int | None = None) -> None:
         original_log_metrics(self, metrics, step=step)
-
-        score_keys = ("best_score_on_valset", "best_valset_agg_score", "base_program_full_valset_score")
-        dev_score: float | None = None
-        for key in score_keys:
-            if key in metrics:
-                dev_score = float(metrics[key])
-                break
-        if dev_score is None:
-            return
-
-        metric_calls = int(metrics.get("total_metric_calls", step if step is not None else 0))
-        program_idx = int(
-            metrics.get(
-                "best_program_as_per_agg_score_valset",
-                metrics.get("new_program_idx", 0),
-            )
-        )
-
-        loaded = load_best_from_gepa_state(run_dir)
-        if loaded is not None:
-            _, _, program_idx, prompt = loaded
-        else:
-            try:
-                from search_r1_gepa.search_r1_gepa_adapter import INSTRUCTION_COMPONENT, default_seed_candidate
-
-                prompt = default_seed_candidate()
-            except (ImportError, ModuleNotFoundError):
-                logger.warning("Cannot resolve prompt for full-test eval trigger")
-                return
-
-        maybe_trigger_full_eval(
-            run_dir=run_dir,
-            dev_score=dev_score,
-            metric_calls=metric_calls,
-            program_idx=program_idx,
-            prompt=prompt,
+        maybe_trigger_full_eval_from_metrics(
+            metrics,
+            run_dir,
+            step=step,
             eval_job_tag=eval_job_tag,
             addr_file=addr_file,
+            run_dir_rel=run_dir_rel,
+            use_rewrite=use_rewrite,
             dry_run=dry_run,
         )
 
