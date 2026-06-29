@@ -42,7 +42,14 @@ from wandb_run import (
 _RECIPE_DIR = Path(__file__).resolve().parent.parent
 
 
-def make_eval_config(base_config: Dict[str, Any], checkpoint_path: str, step: int) -> Dict[str, Any]:
+def make_eval_config(
+    base_config: Dict[str, Any],
+    checkpoint_path: str,
+    step: int,
+    *,
+    n_gpus: int | None = None,
+    sanity: bool = False,
+) -> Dict[str, Any]:
     """Modify a training config into an eval-only config pointing at a checkpoint."""
     config = deepcopy(base_config)
     _actor_dir, global_step_dir = resolve_actor_checkpoint(checkpoint_path)
@@ -59,6 +66,16 @@ def make_eval_config(base_config: Dict[str, Any], checkpoint_path: str, step: in
     config["trainer"]["val_before_train"] = True
     config["trainer"]["eval_global_step"] = step
     config["trainer"]["val_metric_prefix"] = "test"
+    if n_gpus is not None:
+        config["trainer"]["n_gpus_per_node"] = n_gpus
+    if sanity:
+        # Single-GPU smoke test: skip ref worker (KL not used in val_only) and shrink batches.
+        config["actor_rollout_ref"]["actor"]["use_kl_loss"] = False
+        config["actor_rollout_ref"]["actor"]["fsdp_config"]["param_offload"] = True
+        config["actor_rollout_ref"]["rollout"]["gpu_memory_utilization"] = 0.45
+        config["data"]["train_batch_size"] = 32
+        config["actor_rollout_ref"]["actor"]["ppo_mini_batch_size"] = 32
+        config["actor_rollout_ref"]["actor"]["ppo_micro_batch_size_per_gpu"] = 1
     return config
 
 
@@ -72,6 +89,19 @@ def main() -> None:
     parser.add_argument("checkpoint_path", help="Path to the actor checkpoint directory (e.g. global_step_N/actor)")
     parser.add_argument("--step", type=int, required=True, help="Training global step to log full-test metrics at")
     parser.add_argument("--wandb-run-id", default=None, help="Override eval WandB run id (default: auto-resolve)")
+    parser.add_argument("--n-gpus", type=int, default=None, help="Override trainer.n_gpus_per_node (default: from training config)")
+    parser.add_argument("--n-runners", type=int, default=None, help="Parallel agent rollout workers (default: 32, or 4 with --sanity)")
+    parser.add_argument(
+        "--max-val-samples",
+        type=int,
+        default=None,
+        help="Cap validation set size for smoke tests (default: full test.parquet hotpotqa split)",
+    )
+    parser.add_argument(
+        "--sanity",
+        action="store_true",
+        help="1-GPU smoke-test overrides: disable ref/KL, lower vLLM memory, smaller batches",
+    )
     args = parser.parse_args()
 
     config_functions = {
@@ -99,18 +129,32 @@ def main() -> None:
             "eval will create a new run and persist its id"
         )
 
-    config = make_eval_config(base_config, str(checkpoint_path), args.step)
+    config = make_eval_config(
+        base_config,
+        str(checkpoint_path),
+        args.step,
+        n_gpus=1 if args.sanity and args.n_gpus is None else args.n_gpus,
+        sanity=args.sanity,
+    )
 
     agent = build_agent(args.config)
 
+    n_runners = args.n_runners
+    if n_runners is None:
+        n_runners = 4 if args.sanity else 32
+    print(f"Using n_gpus_per_node={config['trainer']['n_gpus_per_node']}, n_runners={n_runners}, sanity={args.sanity}")
+
     algorithm = agl.VERL(config)
-    trainer = agl.Trainer(n_runners=32, algorithm=algorithm)
+    trainer = agl.Trainer(n_runners=n_runners, algorithm=algorithm)
 
     val_df = pd.read_parquet(config["data"]["val_files"])
     if config.get("data_source_filter"):
         source = config["data_source_filter"]
         val_df = val_df[val_df["data_source"] == source]
         print(f"Eval on data_source='{source}': n={len(val_df)}")
+    if args.max_val_samples is not None:
+        val_df = val_df.head(args.max_val_samples)
+        print(f"Capped validation set to max_val_samples={args.max_val_samples}")
 
     val_data = val_df.to_dict(orient="records")
     trainer.fit(agent, train_dataset=[], val_dataset=val_data)
