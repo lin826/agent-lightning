@@ -14,8 +14,8 @@ Environment:
     OPENAI_API_BASE — vLLM OpenAI endpoint for Qwen2.5-3B-Instruct (required)
     GEPA_MAX_METRIC_CALLS — absolute optimization budget (default: 60000; train_gepa.bsub sets 60000)
     GEPA_CHUNK_METRIC_CALLS — incremental budget per job/chunk (default when set: 2760 ≈ one GRPO step)
-    GEPA_ROLLOUT_CONCURRENCY — parallel Search-R1 rollouts (default: 1; train_gepa.bsub sets 8)
-    GEPA_REFLECTION_MINIBATCH_SIZE — reflection minibatch for gepa.optimize (default: 6)
+    GEPA_ROLLOUT_CONCURRENCY — parallel Search-R1 rollouts (default: 8)
+    GEPA_REFLECTION_MINIBATCH_SIZE — reflection minibatch for gepa.optimize (default: 3)
     GEPA_REFLECTION_LM — litellm model id for reflection (default: same as task LM)
     GEPA_TRAIN_SUBSET — optional cap on hotpotqa train examples for smoke tests
     GEPA_TRAIN_TEMPERATURE — rollout temperature during gepa.optimize (default: 1.0)
@@ -69,8 +69,8 @@ DATA_SOURCE = "hotpotqa"
 TRAIN_FILE = "data/train.parquet"
 VAL_FILE = "data/test_dev.parquet"
 DEFAULT_MAX_METRIC_CALLS = 60000
-DEFAULT_ROLLOUT_CONCURRENCY = 1
-DEFAULT_REFLECTION_MINIBATCH_SIZE = 6
+DEFAULT_ROLLOUT_CONCURRENCY = 8
+DEFAULT_REFLECTION_MINIBATCH_SIZE = 3
 
 # GRPO parity: one global_step ≈ train rollouts + val rollouts (RL_TRAINING_CONFIG in train_search_r1_agent.py).
 GRPO_TRAIN_BATCH_SIZE = 512
@@ -297,14 +297,14 @@ def main() -> None:
         "--reflection-minibatch-size",
         type=int,
         default=None,
-        help="Reflection minibatch size (default: GEPA_REFLECTION_MINIBATCH_SIZE or 6)",
+        help="Reflection minibatch size (default: GEPA_REFLECTION_MINIBATCH_SIZE or 3)",
     )
     parser.add_argument("--train-subset", type=int, default=None, help="Cap train examples (smoke tests)")
     parser.add_argument(
         "--rollout-concurrency",
         type=int,
         default=None,
-        help="Parallel Search-R1 rollouts per batch (default: GEPA_ROLLOUT_CONCURRENCY or 1)",
+        help="Parallel Search-R1 rollouts per batch (default: GEPA_ROLLOUT_CONCURRENCY or 8)",
     )
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()

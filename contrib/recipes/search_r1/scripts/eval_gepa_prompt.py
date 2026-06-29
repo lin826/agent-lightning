@@ -8,7 +8,7 @@ test/reward to the dedicated eval WandB run (``wandb_eval_run_id.txt``) and, whe
 ``wandb_run_id.txt`` exists, to the GEPA training run at ``metric_calls`` step.
 
 Environment:
-    GEPA_ROLLOUT_CONCURRENCY — parallel Search-R1 rollouts (default: 1; eval_gepa_prompt.bsub sets 8)
+    GEPA_ROLLOUT_CONCURRENCY — parallel Search-R1 rollouts (default: 8)
 """
 
 from __future__ import annotations
@@ -100,7 +100,7 @@ def main() -> None:
         "--rollout-concurrency",
         type=int,
         default=None,
-        help="Parallel Search-R1 rollouts per batch (default: GEPA_ROLLOUT_CONCURRENCY or 1)",
+        help="Parallel Search-R1 rollouts per batch (default: GEPA_ROLLOUT_CONCURRENCY or 8)",
     )
     parser.add_argument("--wandb-run-id", default=None, help="Override eval WandB run id (default: auto-resolve)")
     args = parser.parse_args()

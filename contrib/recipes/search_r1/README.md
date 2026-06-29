@@ -44,7 +44,7 @@ To compare **Genetic-Pareto prompt evolution** (GEPA) against GRPO weight update
 bsub < train/train_gepa.bsub
 ```
 
-Optional env vars: `GEPA_MAX_METRIC_CALLS` (default 60000), `GEPA_REFLECTION_MINIBATCH_SIZE` (default 6), `GEPA_REFLECTION_LM` (default: same local vLLM endpoint).
+Optional env vars: `GEPA_MAX_METRIC_CALLS` (default 60000), `GEPA_REFLECTION_MINIBATCH_SIZE` (default 3), `GEPA_ROLLOUT_CONCURRENCY` (default 8), `GEPA_REFLECTION_LM` (default: same local vLLM endpoint).
 
 **GRPO-step parity (chunked runs):** set `GEPA_CHUNK_METRIC_CALLS` to budget one LSF job like one GRPO `global_step`. Each chunk adds that many metric calls on top of `gepa_state.bin`’s `total_num_evals` (fresh start: 0 + chunk). Default chunk size is **2760** = `512 × rollout.n(5) + 200` val examples — same formula as `RL_TRAINING_CONFIG` in `scripts/train_search_r1_agent.py`. On resume, `train_gepa.py` skips the redundant pre-optimize seed `evaluate_split` (saves 200 rollouts); seed eval inside `gepa.optimize` still runs only on a fresh start. Submit one chunk per job:
 
