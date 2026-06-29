@@ -26,6 +26,8 @@ EVAL_WANDB_RUN_NAMES: dict[str, str] = {
 GEPA_EVAL_WANDB_RUN_NAMES: dict[str, str] = {
     "baseline": "eval_gepa",
     "rewrite": "eval_gepa_rewrite",
+    "shaped": "eval_gepa_shaped",
+    "rewrite_shaped": "eval_gepa_rewrite_shaped",
 }
 
 GEPA_ROLLOUT_STEP_METRIC = "rollouts"
@@ -519,6 +521,7 @@ def install_gepa_wandb_grpo_compat_patch(
     eval_addr_file: str = "bm25_server_addr_eval_gepa.txt",
     run_dir_rel: str = "outputs/gepa_qwen25_3b",
     use_rewrite: bool = False,
+    reward_mode: str = "em",
 ) -> None:
     """Mirror GEPA mean EM scores into GRPO-style ``val/reward`` and ``training/reward`` keys.
 
@@ -574,11 +577,29 @@ def install_gepa_wandb_grpo_compat_patch(
         if "subsample_score" in metrics:
             train_mean = float(metrics["subsample_score"]) / minibatch_size
             extra["training/reward"] = train_mean
-            extra["training/em"] = train_mean
+            if reward_mode == "shaped":
+                try:
+                    from search_r1_gepa.search_r1_gepa_adapter import get_last_eval_em_mean
+
+                    em_mean = get_last_eval_em_mean()
+                except (ImportError, ModuleNotFoundError):
+                    em_mean = None
+                extra["training/em"] = em_mean if em_mean is not None else train_mean
+            else:
+                extra["training/em"] = train_mean
         elif "new_subsample_score" in metrics:
             train_mean = float(metrics["new_subsample_score"]) / minibatch_size
             extra["training/reward"] = train_mean
-            extra["training/em"] = train_mean
+            if reward_mode == "shaped":
+                try:
+                    from search_r1_gepa.search_r1_gepa_adapter import get_last_eval_em_mean
+
+                    em_mean = get_last_eval_em_mean()
+                except (ImportError, ModuleNotFoundError):
+                    em_mean = None
+                extra["training/em"] = em_mean if em_mean is not None else train_mean
+            else:
+                extra["training/em"] = train_mean
 
         if extra:
             if "total_metric_calls" in metrics:

@@ -105,6 +105,20 @@ RETRIEVAL_VARIANTS: Dict[str, RetrievalVariant] = {
         addr_file="bm25_server_addr_gepa_rewrite.txt",
         train_job_name="train_searchr1_gepa_qwen25_3b_rewrite",
     ),
+    "gepa_shaped": RetrievalVariant(
+        name="gepa_shaped",
+        lsf_job_name="serve_bm25_qwen25_3b_gepa_shaped",
+        serve_script="serve/serve_retrieval_gepa_shaped.bsub",
+        addr_file="bm25_server_addr_gepa_shaped.txt",
+        train_job_name="train_searchr1_gepa_qwen25_3b_shaped",
+    ),
+    "gepa_rewrite_shaped": RetrievalVariant(
+        name="gepa_rewrite_shaped",
+        lsf_job_name="serve_bm25_qwen25_3b_gepa_rewrite_shaped",
+        serve_script="serve/serve_retrieval_gepa_rewrite_shaped.bsub",
+        addr_file="bm25_server_addr_gepa_rewrite_shaped.txt",
+        train_job_name="train_searchr1_gepa_qwen25_3b_rewrite_shaped",
+    ),
 }
 
 EVAL_RETRIEVAL_VARIANTS: Dict[str, RetrievalVariant] = {
@@ -156,6 +170,20 @@ EVAL_RETRIEVAL_VARIANTS: Dict[str, RetrievalVariant] = {
         serve_script="serve/serve_retrieval_eval_gepa_rewrite.bsub",
         addr_file="bm25_server_addr_eval_gepa_rewrite.txt",
         train_job_name="eval_searchr1_qwen25_3b_gepa_rewrite",
+    ),
+    "eval_gepa_shaped": RetrievalVariant(
+        name="eval_gepa_shaped",
+        lsf_job_name="serve_bm25_eval_qwen25_3b_gepa_shaped",
+        serve_script="serve/serve_retrieval_eval_gepa_shaped.bsub",
+        addr_file="bm25_server_addr_eval_gepa_shaped.txt",
+        train_job_name="eval_searchr1_qwen25_3b_gepa_shaped",
+    ),
+    "eval_gepa_rewrite_shaped": RetrievalVariant(
+        name="eval_gepa_rewrite_shaped",
+        lsf_job_name="serve_bm25_eval_qwen25_3b_gepa_rewrite_shaped",
+        serve_script="serve/serve_retrieval_eval_gepa_rewrite_shaped.bsub",
+        addr_file="bm25_server_addr_eval_gepa_rewrite_shaped.txt",
+        train_job_name="eval_searchr1_qwen25_3b_gepa_rewrite_shaped",
     ),
 }
 

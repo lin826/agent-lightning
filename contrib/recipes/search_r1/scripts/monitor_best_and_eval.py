@@ -103,6 +103,24 @@ GEPA_EXPERIMENTS = [
         "run_dir_rel": "outputs/gepa_qwen25_3b_rewrite",
         "use_rewrite": True,
     },
+    {
+        "name": "gepa_qwen25_3b_shaped",
+        "job_prefix": "train_gepa_qwen25_3b_shaped",
+        "eval_job_tag": "qwen25_3b_gepa_shaped",
+        "run_dir": OUTPUTS_DIR / "gepa_qwen25_3b_shaped",
+        "addr_file": "bm25_server_addr_eval_gepa_shaped.txt",
+        "run_dir_rel": "outputs/gepa_qwen25_3b_shaped",
+        "use_rewrite": False,
+    },
+    {
+        "name": "gepa_qwen25_3b_rewrite_shaped",
+        "job_prefix": "train_gepa_qwen25_3b_rewrite_shaped",
+        "eval_job_tag": "qwen25_3b_gepa_rewrite_shaped",
+        "run_dir": OUTPUTS_DIR / "gepa_qwen25_3b_rewrite_shaped",
+        "addr_file": "bm25_server_addr_eval_gepa_rewrite_shaped.txt",
+        "run_dir_rel": "outputs/gepa_qwen25_3b_rewrite_shaped",
+        "use_rewrite": True,
+    },
 ]
 
 VAL_SCORE_PATTERN = re.compile(r"step:(\d+)\s.*?val/reward:([\d.]+)")

@@ -11,7 +11,7 @@ The example is designed to run on a single node with 8 GPUs, each having at leas
 | Path | Description |
 |------|-------------|
 | `scripts/` | Python entrypoints: `train_search_r1_agent.py`, `eval_search_r1_agent.py`, `eval_gepa_prompt.py`, `monitor_best_and_eval.py`, `monitor_retrieval_servers.py`, `strip_stale_checkpoint_optim.py`, `search_r1_agent.py`, `qa_em.py`, `retrieval_server.py`, `wandb_run.py` |
-| `train/` | LSF bsub scripts for GRPO and GEPA training (`train_qwen3b*.bsub`, `train_gepa.bsub`, `train_gepa_rewrite.bsub`, `run_gepa_chunked.bsub`) |
+| `train/` | LSF bsub scripts for GRPO and GEPA training (`train_qwen3b*.bsub`, `train_gepa.bsub`, `train_gepa_rewrite.bsub`, `train_gepa_shaped.bsub`, `train_gepa_rewrite_shaped.bsub`, `run_gepa_chunked.bsub`) |
 | `serve/` | LSF bsub scripts for per-variant dense retrieval servers (`serve_retrieval_*.bsub` for training, `serve_retrieval_eval_*.bsub` for eval), shared launch helper (`_retrieval_server_launch.sh`), and optional watchdog (`monitor_retrieval_servers.bsub`) |
 | `eval/` | Eval bsub templates (`eval_checkpoint.bsub`, `eval_gepa_prompt.bsub`); `eval/generated/` holds monitor-generated one-off eval jobs |
 | `outputs/` | LSF logs (`.out`/`.err`), BM25 addr files, GEPA run state, monitor state |
@@ -66,6 +66,24 @@ bsub < train/train_gepa_rewrite.bsub
 
 WandB run: `searchr1_qwen25_3b_gepa_rewrite`. State under `outputs/gepa_qwen25_3b_rewrite/`.
 
+**GEPA + shaped reward:** same as baseline GEPA but optimizes with shaped reward (EM + retrieval-hit, alpha=0.7, beta=0.3) during training rollouts; validation and full-test eval still report strict EM. Set `GEPA_USE_SHAPED_REWARD=1` or pass `--shaped` to `train_gepa.py`:
+
+```bash
+bsub < serve/serve_retrieval_gepa_shaped.bsub
+bsub < train/train_gepa_shaped.bsub
+```
+
+WandB run: `searchr1_qwen25_3b_gepa_shaped`. State under `outputs/gepa_qwen25_3b_shaped/`.
+
+**GEPA + rewrite + shaped reward:**
+
+```bash
+bsub < serve/serve_retrieval_gepa_rewrite_shaped.bsub
+bsub < train/train_gepa_rewrite_shaped.bsub
+```
+
+WandB run: `searchr1_qwen25_3b_gepa_rewrite_shaped`. State under `outputs/gepa_qwen25_3b_rewrite_shaped/`.
+
 ### Retrieval server pairing (GRPO + GEPA)
 
 Each variant needs **separate** BM25 servers for training and full-test eval. Do not share `serve_retrieval_*.bsub`, `serve_retrieval_eval_*.bsub`, or addr files across variants, and do not point eval jobs at training addr files (or vice versa).
@@ -79,6 +97,8 @@ Each variant needs **separate** BM25 servers for training and full-test eval. Do
 | shaped | `serve_bm25_qwen25_3b_shaped` | `serve/serve_retrieval_shaped.bsub` | `outputs/bm25_server_addr_shaped.txt` | `train/train_qwen3b_shaped.bsub` | `serve_bm25_eval_qwen25_3b_shaped` | `serve/serve_retrieval_eval_shaped.bsub` | `outputs/bm25_server_addr_eval_shaped.txt` | same |
 | gepa | `serve_bm25_qwen25_3b_gepa` | `serve/serve_retrieval_gepa.bsub` | `outputs/bm25_server_addr_gepa.txt` | `train/train_gepa.bsub` | `serve_bm25_eval_qwen25_3b_gepa` | `serve/serve_retrieval_eval_gepa.bsub` | `outputs/bm25_server_addr_eval_gepa.txt` | `eval/eval_gepa_prompt.bsub` (via `scripts/monitor_best_and_eval.py`) |
 | gepa_rewrite | `serve_bm25_qwen25_3b_gepa_rewrite` | `serve/serve_retrieval_gepa_rewrite.bsub` | `outputs/bm25_server_addr_gepa_rewrite.txt` | `train/train_gepa_rewrite.bsub` | `serve_bm25_eval_qwen25_3b_gepa_rewrite` | `serve/serve_retrieval_eval_gepa_rewrite.bsub` | `outputs/bm25_server_addr_eval_gepa_rewrite.txt` | `eval/eval_gepa_prompt.bsub` (via `scripts/monitor_best_and_eval.py`) |
+| gepa_shaped | `serve_bm25_qwen25_3b_gepa_shaped` | `serve/serve_retrieval_gepa_shaped.bsub` | `outputs/bm25_server_addr_gepa_shaped.txt` | `train/train_gepa_shaped.bsub` | `serve_bm25_eval_qwen25_3b_gepa_shaped` | `serve/serve_retrieval_eval_gepa_shaped.bsub` | `outputs/bm25_server_addr_eval_gepa_shaped.txt` | `eval/eval_gepa_prompt.bsub` (via `scripts/monitor_best_and_eval.py`) |
+| gepa_rewrite_shaped | `serve_bm25_qwen25_3b_gepa_rewrite_shaped` | `serve/serve_retrieval_gepa_rewrite_shaped.bsub` | `outputs/bm25_server_addr_gepa_rewrite_shaped.txt` | `train/train_gepa_rewrite_shaped.bsub` | `serve_bm25_eval_qwen25_3b_gepa_rewrite_shaped` | `serve/serve_retrieval_eval_gepa_rewrite_shaped.bsub` | `outputs/bm25_server_addr_eval_gepa_rewrite_shaped.txt` | `eval/eval_gepa_prompt.bsub` (via `scripts/monitor_best_and_eval.py`) |
 
 Submit the matching **train** `serve/serve_retrieval_<variant>.bsub` before training. For full-test eval, submit the matching **eval** `serve/serve_retrieval_eval_<variant>.bsub` before eval jobs run (or rely on `scripts/monitor_retrieval_servers.py --watch --expect-eval --resubmit`). GRPO and GEPA eval jobs poll until their eval addr file appears. Do not reuse legacy paths such as `bm25_server_addr.txt` or `bm25_server_addr_qwen3.txt`. `scripts/monitor_best_and_eval.py` fills `%ADDR_FILE%` with the eval addr file from the table above when it generates eval bsub scripts under `eval/generated/`.
 
@@ -92,6 +112,8 @@ Training and full-test eval use **separate** WandB runs so eval can log at past 
 | GRPO full-test eval | `checkpoints/<variant>/wandb_eval_run_id.txt` | `WANDB_RUN_ID` + `WANDB_RESUME=allow` in `eval/eval_checkpoint.bsub` |
 | GEPA training | `outputs/gepa_qwen25_3b/wandb_run_id.txt` | set in `train/train_gepa.bsub` |
 | GEPA rewrite training | `outputs/gepa_qwen25_3b_rewrite/wandb_run_id.txt` | set in `train/train_gepa_rewrite.bsub` |
+| GEPA shaped training | `outputs/gepa_qwen25_3b_shaped/wandb_run_id.txt` | set in `train/train_gepa_shaped.bsub` |
+| GEPA rewrite+shaped training | `outputs/gepa_qwen25_3b_rewrite_shaped/wandb_run_id.txt` | set in `train/train_gepa_rewrite_shaped.bsub` |
 | GEPA full-test eval | `outputs/gepa_qwen25_3b/wandb_eval_run_id.txt` | set in `eval/eval_gepa_prompt.bsub` |
 
 Each variant keeps its **own** eval run id file (variants never share one eval run). On the first eval for a variant, WandB creates a new run and the job persists its id to that variant's `wandb_eval_run_id.txt`. Later eval jobs at other checkpoint steps for the **same** variant resume that eval run. Training jobs must **not** read `wandb_eval_run_id.txt`; eval jobs must **not** read `wandb_run_id.txt`.
@@ -105,6 +127,8 @@ Each variant keeps its **own** eval run id file (variants never share one eval r
 | shaped | `checkpoints/searchr1_qwen3_8b_shaped/wandb_eval_run_id.txt` |
 | gepa | `outputs/gepa_qwen25_3b/wandb_eval_run_id.txt` |
 | gepa_rewrite | `outputs/gepa_qwen25_3b_rewrite/wandb_eval_run_id.txt` |
+| gepa_shaped | `outputs/gepa_qwen25_3b_shaped/wandb_eval_run_id.txt` |
+| gepa_rewrite_shaped | `outputs/gepa_qwen25_3b_rewrite_shaped/wandb_eval_run_id.txt` |
 
 Do **not** place a shared `wandb_eval_run_id.txt` under `outputs/` or the recipe root; eval bsub scripts derive `CKPT_DIR` from each job's checkpoint path so ids stay variant-local.
 
@@ -136,7 +160,7 @@ Single-process BM25 serve jobs also launch `scripts/gpu_keepalive.py` alongside 
 
 ### Retrieval server health monitoring
 
-Each serve job runs `scripts/retrieval_server.py`, which writes its URL to the addr file after the index loads and exposes `GET /health` → `{"status": "ok"}` plus `POST /search` / `POST /lookup` for agent rollouts. Use `scripts/monitor_retrieval_servers.py` to check **all fourteen train + eval variants** (LSF job status + addr file + HTTP health), detect unexpected exits, and notice addr-file updates when a server restarts.
+Each serve job runs `scripts/retrieval_server.py`, which writes its URL to the addr file after the index loads and exposes `GET /health` → `{"status": "ok"}` plus `POST /search` / `POST /lookup` for agent rollouts. Use `scripts/monitor_retrieval_servers.py` to check **all eighteen train + eval variants** (LSF job status + addr file + HTTP health), detect unexpected exits, and notice addr-file updates when a server restarts.
 
 ```bash
 # One-shot status (from recipe root)

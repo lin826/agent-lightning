@@ -49,6 +49,7 @@ from search_r1_gepa.search_r1_gepa_adapter import (  # noqa: E402
     SearchR1GEPAAdapter,
     default_seed_candidate,
     make_openai_llm_call,
+    resolve_reward_mode,
 )
 from search_r1_agent import INSTRUCTION_FORMAT, INSTRUCTION_FORMAT_REWRITE  # noqa: E402
 from gepa_full_eval import maybe_trigger_full_eval, start_training_session  # noqa: E402
@@ -89,6 +90,7 @@ class GepaVariantConfig:
     eval_job_tag: str
     eval_addr_file: str
     use_rewrite: bool
+    reward_mode: str = "em"
 
 
 GEPA_VARIANTS: dict[str, GepaVariantConfig] = {
@@ -99,6 +101,7 @@ GEPA_VARIANTS: dict[str, GepaVariantConfig] = {
         eval_job_tag="qwen25_3b_gepa",
         eval_addr_file="bm25_server_addr_eval_gepa.txt",
         use_rewrite=False,
+        reward_mode="em",
     ),
     "rewrite": GepaVariantConfig(
         name="rewrite",
@@ -107,16 +110,41 @@ GEPA_VARIANTS: dict[str, GepaVariantConfig] = {
         eval_job_tag="qwen25_3b_gepa_rewrite",
         eval_addr_file="bm25_server_addr_eval_gepa_rewrite.txt",
         use_rewrite=True,
+        reward_mode="em",
+    ),
+    "shaped": GepaVariantConfig(
+        name="shaped",
+        run_dir_name="gepa_qwen25_3b_shaped",
+        wandb_experiment="searchr1_qwen25_3b_gepa_shaped",
+        eval_job_tag="qwen25_3b_gepa_shaped",
+        eval_addr_file="bm25_server_addr_eval_gepa_shaped.txt",
+        use_rewrite=False,
+        reward_mode="shaped",
+    ),
+    "rewrite_shaped": GepaVariantConfig(
+        name="rewrite_shaped",
+        run_dir_name="gepa_qwen25_3b_rewrite_shaped",
+        wandb_experiment="searchr1_qwen25_3b_gepa_rewrite_shaped",
+        eval_job_tag="qwen25_3b_gepa_rewrite_shaped",
+        eval_addr_file="bm25_server_addr_eval_gepa_rewrite_shaped.txt",
+        use_rewrite=True,
+        reward_mode="shaped",
     ),
 }
 
 
-def resolve_gepa_variant(*, rewrite: bool = False) -> GepaVariantConfig:
-    return GEPA_VARIANTS["rewrite" if rewrite else "baseline"]
+def resolve_gepa_variant(*, rewrite: bool = False, shaped: bool = False) -> GepaVariantConfig:
+    if rewrite and shaped:
+        return GEPA_VARIANTS["rewrite_shaped"]
+    if shaped:
+        return GEPA_VARIANTS["shaped"]
+    if rewrite:
+        return GEPA_VARIANTS["rewrite"]
+    return GEPA_VARIANTS["baseline"]
 
 
-def default_run_dir(recipe_dir: Path, *, rewrite: bool = False) -> Path:
-    return recipe_dir / "outputs" / resolve_gepa_variant(rewrite=rewrite).run_dir_name
+def default_run_dir(recipe_dir: Path, *, rewrite: bool = False, shaped: bool = False) -> Path:
+    return recipe_dir / "outputs" / resolve_gepa_variant(rewrite=rewrite, shaped=shaped).run_dir_name
 
 
 # Backward-compatible alias for scripts that target the baseline GEPA run.
@@ -286,6 +314,11 @@ def main() -> None:
         action="store_true",
         help="Use <rewrite> seed instruction and rewrite turn during rollouts (GRPO rewrite variant)",
     )
+    parser.add_argument(
+        "--shaped",
+        action="store_true",
+        help="Optimize with shaped reward (EM + retrieval-hit) during training rollouts",
+    )
     parser.add_argument("--max-metric-calls", type=int, default=None, help="GEPA absolute evaluation budget")
     parser.add_argument(
         "--chunk-metric-calls",
@@ -309,9 +342,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
-    variant = resolve_gepa_variant(rewrite=args.rewrite)
+    variant = resolve_gepa_variant(rewrite=args.rewrite, shaped=args.shaped or resolve_reward_mode() == "shaped")
     if args.run_dir is None:
-        args.run_dir = default_run_dir(_RECIPE_DIR, rewrite=args.rewrite)
+        args.run_dir = default_run_dir(_RECIPE_DIR, rewrite=variant.use_rewrite, shaped=variant.reward_mode == "shaped")
 
     train_subset = args.train_subset
     reflection_minibatch_size = resolve_reflection_minibatch_size(args.reflection_minibatch_size)
@@ -373,6 +406,7 @@ def main() -> None:
         val_temperature=val_temperature,
         rollout_concurrency=rollout_concurrency,
         use_rewrite=variant.use_rewrite,
+        reward_mode=variant.reward_mode,
     )
     val_adapter = SearchR1GEPAAdapter(
         llm_call,
@@ -381,6 +415,7 @@ def main() -> None:
         val_temperature=val_temperature,
         rollout_concurrency=rollout_concurrency,
         use_rewrite=variant.use_rewrite,
+        reward_mode=variant.reward_mode,
     )
 
     seed_candidate = default_seed_candidate(use_rewrite=variant.use_rewrite)
@@ -389,6 +424,7 @@ def main() -> None:
         "baseline": "gepa",
         "variant": variant.name,
         "use_rewrite": variant.use_rewrite,
+        "reward_mode": variant.reward_mode,
         "model": MODEL_NAME,
         "data_source": DATA_SOURCE,
         "train_file": TRAIN_FILE,
@@ -434,6 +470,7 @@ def main() -> None:
         eval_addr_file=variant.eval_addr_file,
         run_dir_rel=f"outputs/{variant.run_dir_name}",
         use_rewrite=variant.use_rewrite,
+        reward_mode=variant.reward_mode,
     )
     if not resuming_gepa:
         maybe_trigger_full_eval(

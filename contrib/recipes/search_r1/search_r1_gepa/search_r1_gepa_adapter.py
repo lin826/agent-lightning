@@ -3,8 +3,8 @@
 """GEPA adapter for Search-R1 multi-turn retrieval QA.
 
 Optimizes the Search-R1 instruction prompt (same tag format as GRPO baseline)
-while keeping Qwen2.5-3B-Instruct weights frozen. Uses BM25 retrieval and the
-same EM metric as ``qa_em.compute_score_em``.
+while keeping Qwen2.5-3B-Instruct weights frozen. Uses BM25 retrieval and EM
+or shaped (EM + retrieval-hit) rewards matching GRPO variants.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from gepa.core.adapter import EvaluationBatch, GEPAAdapter
-from qa_em import compute_score_em, extract_solution
+from qa_em import compute_score_em, compute_shaped_reward, extract_solution
 from search_r1_agent import (
     execute_response,
     INSTRUCTION_FORMAT,
@@ -34,6 +34,41 @@ from search_r1_agent import (
 logger = logging.getLogger(__name__)
 
 INSTRUCTION_COMPONENT = "instruction_prompt"
+DEFAULT_SHAPED_ALPHA = 0.7
+DEFAULT_SHAPED_BETA = 0.3
+_INFORMATION_PATTERN = re.compile(r"<information>(.*?)</information>", re.DOTALL)
+
+# Set by evaluate() when reward_mode=shaped so WandB can log strict EM separately.
+_last_eval_em_mean: float | None = None
+
+
+def resolve_reward_mode(*, cli_shaped: bool = False) -> str:
+    """Resolve GEPA reward mode from CLI, ``GEPA_REWARD_MODE``, or ``GEPA_USE_SHAPED_REWARD``."""
+    if cli_shaped or os.environ.get("GEPA_USE_SHAPED_REWARD", "").strip().lower() in {"1", "true", "yes"}:
+        return "shaped"
+    env_mode = os.environ.get("GEPA_REWARD_MODE", "").strip().lower()
+    if env_mode in {"shaped", "em"}:
+        return env_mode
+    return "em"
+
+
+def get_last_eval_em_mean() -> float | None:
+    """Return mean strict EM from the most recent shaped train-mode evaluate() call."""
+    return _last_eval_em_mean
+
+
+def extract_retrieved_passages_from_rollout(rollout_content: str) -> list[list[str]]:
+    """Parse ``<information>`` blocks into per-search passage lists for shaped reward."""
+    passages_per_search: list[list[str]] = []
+    for match in _INFORMATION_PATTERN.finditer(rollout_content):
+        block = match.group(1).strip()
+        if not block:
+            passages_per_search.append([])
+            continue
+        docs = re.split(r"(?=Doc \d+\(Title:)", block)
+        passages = [doc.strip() for doc in docs if doc.strip()]
+        passages_per_search.append(passages)
+    return passages_per_search
 
 
 class SearchR1DataInst(TypedDict):
@@ -47,11 +82,13 @@ class SearchR1RolloutOutput(TypedDict):
     extracted_answer: str | None
 
 
-class SearchR1Trajectory(TypedDict):
+class SearchR1Trajectory(TypedDict, total=False):
     data: SearchR1DataInst
     rollout_content: str
     extracted_answer: str | None
     feedback: str
+    em_score: float
+    reward_score: float
 
 
 SearchR1ReflectiveRecord = TypedDict(
@@ -190,6 +227,9 @@ class SearchR1GEPAAdapter(GEPAAdapter[SearchR1DataInst, SearchR1Trajectory, Sear
         eval_mode: str = "train",
         rollout_concurrency: int = 1,
         use_rewrite: bool = False,
+        reward_mode: str = "em",
+        alpha: float = DEFAULT_SHAPED_ALPHA,
+        beta: float = DEFAULT_SHAPED_BETA,
     ) -> None:
         self.llm_call = llm_call
         self.max_turns = max_turns
@@ -198,9 +238,26 @@ class SearchR1GEPAAdapter(GEPAAdapter[SearchR1DataInst, SearchR1Trajectory, Sear
         self.eval_mode = eval_mode
         self.rollout_concurrency = max(1, rollout_concurrency)
         self.use_rewrite = use_rewrite
+        self.reward_mode = reward_mode
+        self.alpha = alpha
+        self.beta = beta
 
     def _temperature(self) -> float:
         return self.val_temperature if self.eval_mode == "val" else self.train_temperature
+
+    def _optimization_score(self, rollout_content: str, golden_answers: list[str], em_score: float) -> float:
+        if self.reward_mode != "shaped" or self.eval_mode != "train":
+            return em_score
+        retrieved_passages = extract_retrieved_passages_from_rollout(rollout_content)
+        return float(
+            compute_shaped_reward(
+                rollout_content,
+                golden_answers,
+                retrieved_passages,
+                alpha=self.alpha,
+                beta=self.beta,
+            )
+        )
 
     def _evaluate_one(
         self,
@@ -217,6 +274,7 @@ class SearchR1GEPAAdapter(GEPAAdapter[SearchR1DataInst, SearchR1Trajectory, Sear
                 use_rewrite=self.use_rewrite,
             )
             em_score = float(compute_score_em(rollout_content, data["golden_answers"]))
+            reward_score = self._optimization_score(rollout_content, data["golden_answers"], em_score)
             extracted = extract_solution(rollout_content)
             output: SearchR1RolloutOutput = {
                 "rollout_content": rollout_content,
@@ -226,18 +284,21 @@ class SearchR1GEPAAdapter(GEPAAdapter[SearchR1DataInst, SearchR1Trajectory, Sear
         except Exception as exc:
             logger.exception("Rollout failed for %s: %s", data.get("data_id", "?"), exc)
             em_score = 0.0
+            reward_score = 0.0
             rollout_content = ""
             extracted = None
             output = {"rollout_content": rollout_content, "extracted_answer": extracted}
             feedback = f"Rollout failed with error: {exc}"
 
-        trajectory = {
+        trajectory: SearchR1Trajectory = {
             "data": data,
             "rollout_content": rollout_content,
             "extracted_answer": extracted,
             "feedback": feedback,
+            "em_score": em_score,
+            "reward_score": reward_score,
         }
-        return output, em_score, trajectory
+        return output, reward_score, trajectory
 
     def evaluate(
         self,
@@ -250,22 +311,31 @@ class SearchR1GEPAAdapter(GEPAAdapter[SearchR1DataInst, SearchR1Trajectory, Sear
         scores: list[float] = []
         trajectories: list[SearchR1Trajectory] | None = [] if capture_traces else None
 
+        em_scores: list[float] = []
         if self.rollout_concurrency <= 1 or len(batch) <= 1:
             for data in batch:
-                output, em_score, trajectory = self._evaluate_one(data, instruction)
+                output, reward_score, trajectory = self._evaluate_one(data, instruction)
                 outputs.append(output)
-                scores.append(em_score)
+                scores.append(reward_score)
+                em_scores.append(float(trajectory.get("em_score", reward_score)))
                 if trajectories is not None:
                     trajectories.append(trajectory)
         else:
             workers = min(self.rollout_concurrency, len(batch))
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 results = list(pool.map(lambda data: self._evaluate_one(data, instruction), batch))
-            for output, em_score, trajectory in results:
+            for output, reward_score, trajectory in results:
                 outputs.append(output)
-                scores.append(em_score)
+                scores.append(reward_score)
+                em_scores.append(float(trajectory.get("em_score", reward_score)))
                 if trajectories is not None:
                     trajectories.append(trajectory)
+
+        global _last_eval_em_mean
+        if self.reward_mode == "shaped" and self.eval_mode == "train" and em_scores:
+            _last_eval_em_mean = sum(em_scores) / len(em_scores)
+        else:
+            _last_eval_em_mean = None
 
         return EvaluationBatch(outputs=outputs, scores=scores, trajectories=trajectories)
 

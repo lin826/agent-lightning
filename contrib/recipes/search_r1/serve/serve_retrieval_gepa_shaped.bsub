@@ -1,0 +1,38 @@
+#!/bin/bash
+#BSUB -J serve_bm25_qwen25_3b_gepa_shaped
+#BSUB -G grp_runtime
+#BSUB -q normal
+#BSUB -n 56
+#BSUB -R "span[hosts=1] rusage[mem=512GB]"
+#BSUB -gpu "num=8:mode=shared:j_exclusive=yes:gmodel=NVIDIAH10080GBHBM3"
+#BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_gepa_shaped.%J.out
+#BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/serve_bm25_gepa_shaped.%J.err
+
+# Dedicated BM25 retrieval server for GEPA shaped (train/train_gepa_shaped.bsub).
+# Pair with train/train_gepa_shaped.bsub only — do not share with other variants.
+
+set -euo pipefail
+
+PPLRL=/proj/inf-scaling/zwhong/projs/asmi/prompt-policy-rl
+PYTHON=${PPLRL}/.venv/bin/python
+WIKI=/proj/inf-scaling/zwhong/projs/asmi/code/dsl-agent/dspy_tutorial/wiki2017
+RECIPE=/proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1
+ADDR_FILE=${RECIPE}/outputs/bm25_server_addr_gepa_shaped.txt
+
+export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
+CACHE_ROOT=/proj/inf-scaling/zwhong/.cache
+export HF_HOME="${CACHE_ROOT}/huggingface"
+export TRITON_CACHE_DIR="${CACHE_ROOT}/triton"
+export XDG_CACHE_HOME="${CACHE_ROOT}/xdg"
+
+mkdir -p "${TRITON_CACHE_DIR}" "${XDG_CACHE_HOME}" "${RECIPE}/outputs"
+
+export RETRIEVAL_MODE=bm25
+export BM25_BACKEND=torch
+export RETRIEVAL_NUM_WORKERS=8
+
+rm -f "${ADDR_FILE}"
+
+cd "${PPLRL}"
+# shellcheck source=serve/_retrieval_server_launch.sh
+source "${RECIPE}/serve/_retrieval_server_launch.sh"
