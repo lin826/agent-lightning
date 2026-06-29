@@ -1,0 +1,21 @@
+#!/bin/bash
+#BSUB -J train_searchr1_gepa_qwen25_3b_chunk
+#BSUB -G grp_runtime
+#BSUB -q normal
+#BSUB -n 72
+#BSUB -R "span[hosts=1] rusage[mem=128GB]"
+#BSUB -gpu "num=8:mode=shared:j_exclusive=yes:gmodel=NVIDIAH10080GBHBM3"
+#BSUB -o /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_gepa_qwen25_3b_chunk.%J.out
+#BSUB -e /proj/inf-scaling/zwhong/projs/asmi/agent-lightning/contrib/recipes/search_r1/outputs/train_gepa_qwen25_3b_chunk.%J.err
+
+# One GEPA chunk ≈ one GRPO global_step (2760 metric calls by default).
+# Re-submit after each chunk completes to continue from gepa_state.bin.
+#
+#   SERVE_JID=$(bsub < serve/serve_retrieval_gepa.bsub | sed -n 's/.*Job <\([0-9]*\)>.*/\1/p')
+#   bsub -w "started(${SERVE_JID})" < train/run_gepa_chunked.bsub
+
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+export GEPA_CHUNK_METRIC_CALLS=${GEPA_CHUNK_METRIC_CALLS:-2760}
+exec bash "${SCRIPT_DIR}/train_gepa.bsub"

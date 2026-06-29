@@ -12,11 +12,14 @@ Usage:
 Environment:
     RETRIEVAL_SERVER_URL or RETRIEVAL_SERVER_ADDR_FILE — BM25 server (required)
     OPENAI_API_BASE — vLLM OpenAI endpoint for Qwen2.5-3B-Instruct (required)
-    GEPA_MAX_METRIC_CALLS — optimization budget (default: 60000; train_gepa.bsub sets 60000)
+    GEPA_MAX_METRIC_CALLS — absolute optimization budget (default: 60000; train_gepa.bsub sets 60000)
+    GEPA_CHUNK_METRIC_CALLS — incremental budget per job/chunk (default when set: 2760 ≈ one GRPO step)
     GEPA_ROLLOUT_CONCURRENCY — parallel Search-R1 rollouts (default: 1; train_gepa.bsub sets 8)
     GEPA_REFLECTION_MINIBATCH_SIZE — reflection minibatch for gepa.optimize (default: 6)
     GEPA_REFLECTION_LM — litellm model id for reflection (default: same as task LM)
     GEPA_TRAIN_SUBSET — optional cap on hotpotqa train examples for smoke tests
+    GEPA_TRAIN_TEMPERATURE — rollout temperature during gepa.optimize (default: 1.0)
+    GEPA_VAL_TEMPERATURE — rollout temperature for seed/final val eval (default: 0.0)
 """
 
 from __future__ import annotations
@@ -68,6 +71,12 @@ VAL_FILE = "data/test_dev.parquet"
 DEFAULT_MAX_METRIC_CALLS = 60000
 DEFAULT_ROLLOUT_CONCURRENCY = 1
 DEFAULT_REFLECTION_MINIBATCH_SIZE = 6
+
+# GRPO parity: one global_step ≈ train rollouts + val rollouts (RL_TRAINING_CONFIG in train_search_r1_agent.py).
+GRPO_TRAIN_BATCH_SIZE = 512
+GRPO_ROLLOUT_N = 5
+GRPO_VAL_EXAMPLES = 200  # hotpotqa rows in data/test_dev.parquet
+DEFAULT_GRPO_STEP_ROLLOUTS = GRPO_TRAIN_BATCH_SIZE * GRPO_ROLLOUT_N + GRPO_VAL_EXAMPLES
 
 
 @dataclass(frozen=True)
@@ -130,6 +139,93 @@ def resolve_reflection_minibatch_size(cli_value: int | None) -> int:
     return DEFAULT_REFLECTION_MINIBATCH_SIZE
 
 
+def resolve_train_temperature() -> float:
+    if os.environ.get("GEPA_TRAIN_TEMPERATURE"):
+        return float(os.environ["GEPA_TRAIN_TEMPERATURE"])
+    return 1.0
+
+
+def resolve_val_temperature() -> float:
+    if os.environ.get("GEPA_VAL_TEMPERATURE"):
+        return float(os.environ["GEPA_VAL_TEMPERATURE"])
+    return 0.0
+
+
+def compute_grpo_step_rollouts(
+    *,
+    train_batch_size: int = GRPO_TRAIN_BATCH_SIZE,
+    rollout_n: int = GRPO_ROLLOUT_N,
+    val_examples: int = GRPO_VAL_EXAMPLES,
+) -> int:
+    """Return rollout budget for one GRPO ``global_step`` (train batch × n + val set)."""
+    return train_batch_size * rollout_n + val_examples
+
+
+def load_gepa_total_evals(run_dir: Path) -> int:
+    """Return ``total_num_evals`` from ``gepa_state.bin``, or 0 when missing."""
+    state_path = run_dir / "gepa_state.bin"
+    if not state_path.is_file():
+        return 0
+    from gepa.core.state import GEPAState
+
+    state = GEPAState.load(str(run_dir))
+    return int(state.total_num_evals)
+
+
+def resolve_chunk_metric_calls(cli_value: int | None) -> int | None:
+    """Parse incremental chunk size from CLI or ``GEPA_CHUNK_METRIC_CALLS``."""
+    if cli_value is not None:
+        return max(1, cli_value)
+    env_val = os.environ.get("GEPA_CHUNK_METRIC_CALLS")
+    if env_val is not None and env_val.strip() != "":
+        return max(1, int(env_val))
+    return None
+
+
+def resolve_max_metric_calls(
+    *,
+    cli_max: int | None,
+    cli_chunk: int | None,
+    run_dir: Path,
+    resuming_gepa: bool,
+) -> tuple[int, int | None, int]:
+    """Return ``(effective_max, chunk_size_or_none, prior_total_evals)``."""
+    chunk = resolve_chunk_metric_calls(cli_chunk)
+    prior_total = load_gepa_total_evals(run_dir) if resuming_gepa else 0
+
+    if chunk is not None:
+        effective = prior_total + chunk
+        logger.info(
+            "GEPA chunk budget: prior_total=%d chunk=%d effective_max=%d (≈ one GRPO step when chunk=%d)",
+            prior_total,
+            chunk,
+            effective,
+            DEFAULT_GRPO_STEP_ROLLOUTS,
+        )
+        return effective, chunk, prior_total
+
+    if cli_max is not None:
+        return cli_max, None, prior_total
+
+    absolute = int(os.environ.get("GEPA_MAX_METRIC_CALLS", str(DEFAULT_MAX_METRIC_CALLS)))
+    return absolute, None, prior_total
+
+
+def load_seed_val_em(run_dir: Path) -> float | None:
+    """Load cached seed val/em from a prior ``gepa_summary.json``."""
+    summary_path = run_dir / "gepa_summary.json"
+    if not summary_path.is_file():
+        return None
+    try:
+        with open(summary_path) as f:
+            summary = json.load(f)
+        if "seed_val_em" in summary:
+            return float(summary["seed_val_em"])
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.warning("Failed to read seed_val_em from %s: %s", summary_path, exc)
+    return None
+
+
 def load_dataset(data_dir: Path, *, train_subset: int | None = None) -> tuple[list[SearchR1DataInst], list[SearchR1DataInst]]:
     train_df = pd.read_parquet(data_dir / TRAIN_FILE)
     val_df = pd.read_parquet(data_dir / VAL_FILE)
@@ -190,7 +286,13 @@ def main() -> None:
         action="store_true",
         help="Use <rewrite> seed instruction and rewrite turn during rollouts (GRPO rewrite variant)",
     )
-    parser.add_argument("--max-metric-calls", type=int, default=None, help="GEPA evaluation budget")
+    parser.add_argument("--max-metric-calls", type=int, default=None, help="GEPA absolute evaluation budget")
+    parser.add_argument(
+        "--chunk-metric-calls",
+        type=int,
+        default=None,
+        help="Incremental budget for this run (default: GEPA_CHUNK_METRIC_CALLS or GRPO-step parity)",
+    )
     parser.add_argument(
         "--reflection-minibatch-size",
         type=int,
@@ -210,10 +312,6 @@ def main() -> None:
     variant = resolve_gepa_variant(rewrite=args.rewrite)
     if args.run_dir is None:
         args.run_dir = default_run_dir(_RECIPE_DIR, rewrite=args.rewrite)
-
-    max_metric_calls = args.max_metric_calls
-    if max_metric_calls is None:
-        max_metric_calls = int(os.environ.get("GEPA_MAX_METRIC_CALLS", str(DEFAULT_MAX_METRIC_CALLS)))
 
     train_subset = args.train_subset
     reflection_minibatch_size = resolve_reflection_minibatch_size(args.reflection_minibatch_size)
@@ -236,6 +334,14 @@ def main() -> None:
     fresh_session = os.environ.get("GEPA_FRESH_SESSION", "").lower() in {"1", "true", "yes"}
     gepa_state_path = args.run_dir / "gepa_state.bin"
     resuming_gepa = gepa_state_path.is_file() and not fresh_session
+
+    max_metric_calls, chunk_metric_calls, prior_total_evals = resolve_max_metric_calls(
+        cli_max=args.max_metric_calls,
+        cli_chunk=args.chunk_metric_calls,
+        run_dir=args.run_dir,
+        resuming_gepa=resuming_gepa,
+    )
+
     if not fresh_session:
         run_id = resolve_gepa_wandb_run_id(
             project=WANDB_PROJECT,
@@ -255,11 +361,24 @@ def main() -> None:
     rollout_concurrency = resolve_rollout_concurrency(args.rollout_concurrency)
     logger.info("Rollout concurrency=%d", rollout_concurrency)
 
-    llm_call = make_openai_llm_call(base_url=api_base, model=MODEL_NAME, default_temperature=1.0)
-    # Use deterministic val temperature for GEPA metric calls so scores match seed/final eval.
-    adapter = SearchR1GEPAAdapter(
+    train_temperature = resolve_train_temperature()
+    val_temperature = resolve_val_temperature()
+    llm_call = make_openai_llm_call(base_url=api_base, model=MODEL_NAME, default_temperature=train_temperature)
+    # train=stochastic rollouts during gepa.optimize; val=deterministic for seed/final eval
+    # so logged val/em matches eval_gepa_prompt.py and in-process full-test eval.
+    train_adapter = SearchR1GEPAAdapter(
+        llm_call,
+        eval_mode="train",
+        train_temperature=train_temperature,
+        val_temperature=val_temperature,
+        rollout_concurrency=rollout_concurrency,
+        use_rewrite=variant.use_rewrite,
+    )
+    val_adapter = SearchR1GEPAAdapter(
         llm_call,
         eval_mode="val",
+        train_temperature=train_temperature,
+        val_temperature=val_temperature,
         rollout_concurrency=rollout_concurrency,
         use_rewrite=variant.use_rewrite,
     )
@@ -275,6 +394,9 @@ def main() -> None:
         "train_file": TRAIN_FILE,
         "val_file": VAL_FILE,
         "max_metric_calls": max_metric_calls,
+        "chunk_metric_calls": chunk_metric_calls,
+        "prior_total_evals": prior_total_evals,
+        "grpo_step_rollouts": DEFAULT_GRPO_STEP_ROLLOUTS,
         "rollout_concurrency": rollout_concurrency,
         "reflection_minibatch_size": reflection_minibatch_size,
         "seed_instruction": seed_instruction[:200],
@@ -287,15 +409,23 @@ def main() -> None:
         wandb_dir=wandb_dir,
     )
 
-    logger.info("Evaluating seed prompt on val (n=%d)...", len(val_data))
-    val_adapter = SearchR1GEPAAdapter(
-        llm_call,
-        eval_mode="val",
-        rollout_concurrency=rollout_concurrency,
-        use_rewrite=variant.use_rewrite,
-    )
-    seed_val_em = evaluate_split(val_adapter, seed_candidate, val_data)
-    logger.info("Seed val/em=%.4f", seed_val_em)
+    if resuming_gepa:
+        cached_seed = load_seed_val_em(args.run_dir)
+        if cached_seed is not None:
+            seed_val_em = cached_seed
+            logger.info(
+                "Resuming: using cached seed val/em=%.4f (skipped redundant seed evaluate_split)",
+                seed_val_em,
+            )
+        else:
+            logger.warning("Resuming without gepa_summary.json seed_val_em; re-evaluating seed prompt")
+            logger.info("Evaluating seed prompt on val (n=%d)...", len(val_data))
+            seed_val_em = evaluate_split(val_adapter, seed_candidate, val_data)
+            logger.info("Seed val/em=%.4f", seed_val_em)
+    else:
+        logger.info("Evaluating seed prompt on val (n=%d)...", len(val_data))
+        seed_val_em = evaluate_split(val_adapter, seed_candidate, val_data)
+        logger.info("Seed val/em=%.4f", seed_val_em)
 
     install_gepa_wandb_grpo_compat_patch(
         reflection_minibatch_size=reflection_minibatch_size,
@@ -340,7 +470,7 @@ def main() -> None:
         seed_candidate=seed_candidate,
         trainset=train_data,
         valset=val_data,
-        adapter=adapter,
+        adapter=train_adapter,
         reflection_lm=reflection_lm,
         candidate_selection_strategy="pareto",
         reflection_minibatch_size=reflection_minibatch_size,
@@ -356,12 +486,6 @@ def main() -> None:
 
     best_candidate = result.best_candidate
     best_val_em = evaluate_split(val_adapter, best_candidate, val_data)
-    train_adapter = SearchR1GEPAAdapter(
-        llm_call,
-        eval_mode="train",
-        rollout_concurrency=rollout_concurrency,
-        use_rewrite=variant.use_rewrite,
-    )
     best_train_em = evaluate_split(train_adapter, best_candidate, train_data[: min(500, len(train_data))])
 
     from gepa.core.state import GEPAState

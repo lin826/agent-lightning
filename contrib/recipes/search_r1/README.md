@@ -11,7 +11,7 @@ The example is designed to run on a single node with 8 GPUs, each having at leas
 | Path | Description |
 |------|-------------|
 | `scripts/` | Python entrypoints: `train_search_r1_agent.py`, `eval_search_r1_agent.py`, `eval_gepa_prompt.py`, `monitor_best_and_eval.py`, `monitor_retrieval_servers.py`, `strip_stale_checkpoint_optim.py`, `search_r1_agent.py`, `qa_em.py`, `retrieval_server.py`, `wandb_run.py` |
-| `train/` | LSF bsub scripts for GRPO and GEPA training (`train_qwen3b*.bsub`, `train_gepa.bsub`, `train_gepa_rewrite.bsub`) |
+| `train/` | LSF bsub scripts for GRPO and GEPA training (`train_qwen3b*.bsub`, `train_gepa.bsub`, `train_gepa_rewrite.bsub`, `run_gepa_chunked.bsub`) |
 | `serve/` | LSF bsub scripts for per-variant dense retrieval servers (`serve_retrieval_*.bsub` for training, `serve_retrieval_eval_*.bsub` for eval), shared launch helper (`_retrieval_server_launch.sh`), and optional watchdog (`monitor_retrieval_servers.bsub`) |
 | `eval/` | Eval bsub templates (`eval_checkpoint.bsub`, `eval_gepa_prompt.bsub`); `eval/generated/` holds monitor-generated one-off eval jobs |
 | `outputs/` | LSF logs (`.out`/`.err`), BM25 addr files, GEPA run state, monitor state |
@@ -45,6 +45,17 @@ bsub < train/train_gepa.bsub
 ```
 
 Optional env vars: `GEPA_MAX_METRIC_CALLS` (default 60000), `GEPA_REFLECTION_MINIBATCH_SIZE` (default 6), `GEPA_REFLECTION_LM` (default: same local vLLM endpoint).
+
+**GRPO-step parity (chunked runs):** set `GEPA_CHUNK_METRIC_CALLS` to budget one LSF job like one GRPO `global_step`. Each chunk adds that many metric calls on top of `gepa_state.bin`’s `total_num_evals` (fresh start: 0 + chunk). Default chunk size is **2760** = `512 × rollout.n(5) + 200` val examples — same formula as `RL_TRAINING_CONFIG` in `scripts/train_search_r1_agent.py`. On resume, `train_gepa.py` skips the redundant pre-optimize seed `evaluate_split` (saves 200 rollouts); seed eval inside `gepa.optimize` still runs only on a fresh start. Submit one chunk per job:
+
+```bash
+export GEPA_CHUNK_METRIC_CALLS=2760
+bsub < train/train_gepa.bsub
+# or use the convenience wrapper:
+bsub < train/run_gepa_chunked.bsub
+```
+
+Re-submit the same command to advance another GRPO-equivalent chunk until `GEPA_MAX_METRIC_CALLS` (absolute cap) is reached if also set.
 
 **GEPA + rewrite:** same setup but seeds with `INSTRUCTION_FORMAT_REWRITE`, runs a `<rewrite>` turn before search, and optimizes that prompt family. Use dedicated serve/train scripts and output dir:
 
@@ -101,13 +112,27 @@ When eval pollution or a crashed job leaves the training WandB run ahead of the 
 
 ### Retrieval server parallelism
 
-LSF serve jobs request **8× H100 80 GB** (`#BSUB -gpu num=8`) and launch `scripts/retrieval_server.py` via `serve/_retrieval_server_launch.sh`. All `serve/serve_retrieval_*.bsub` scripts export **GPU torch BM25** before sourcing the launch helper (`RETRIEVAL_MODE=bm25`, `BM25_BACKEND=torch`, `TORCH_BM25_DEVICE=cuda`), row-sharded across visible GPUs via bm25_pt.
+LSF serve jobs request **8× H100 80 GB** (`#BSUB -gpu num=8`) and launch `scripts/retrieval_server.py` via `serve/_retrieval_server_launch.sh`. Production BM25 jobs set **`RETRIEVAL_NUM_WORKERS=8`**: eight independent uvicorn processes each load the **full** torch BM25 index on `cuda:0` … `cuda:7` (no row-sharding inside a process), and a round-robin **load balancer** on the base port fans `/search` across workers. The addr file still holds a **single** URL (the balancer); agents and monitors are unchanged.
+
+Legacy **single-process row-shard** mode remains available (`RETRIEVAL_NUM_WORKERS=1`, `TORCH_BM25_DEVICE=cuda`): one process shards `_corpus_scores` row-wise across all visible GPUs.
+
+**Rebuild the shared CPU cache** (one-time ~80 min for wiki2017; same file for both modes):
+
+```bash
+cd /path/to/prompt-policy-rl
+export PYTHONPATH=/path/to/agent-lightning/contrib/recipes/search_r1/scripts
+python contrib/recipes/search_r1/scripts/retrieval_server.py \
+  --wiki-dir /path/to/wiki2017 \
+  --retriever_name bm25 --bm25-backend torch \
+  --rebuild-torch-bm25-cache
+# writes <wiki-dir>/torch_bm25_index_k1_0.9_b0.4/torch_bm25_state.pt then exits
+```
 
 **Dense e5 + FAISS** remains available for local dev (`RETRIEVAL_MODE=dense`, index/corpus under `data/e5_Flat.index` and `data/wiki-18.jsonl`). Dense mode loads **one encoder replica per visible GPU**, shards FAISS with **`--faiss_gpu`**, and **micro-batches concurrent `/search` requests** (`SEARCH_BATCH_SIZE=32`, `SEARCH_BATCH_WAIT_MS=10`) so rollouts fan encode work across all GPUs instead of pinning `cuda:0`.
 
 CPU **bm25s** / Lucene remain available as BM25 backends (`BM25_BACKEND=bm25s|lucene`); bm25s batch search uses outer threads with `n_threads=1` per query to avoid oversubscription.
 
-BM25 serve jobs also launch `scripts/gpu_keepalive.py` alongside the retrieval server. It runs a small matmul on each visible GPU on a fixed duty cycle (default **~5%** utilization via `KEEPALIVE_TARGET_UTIL=0.05`) so idle gaps do not trip cluster GPU reapers, without the prior burst-to-100% sawtooth.
+Single-process BM25 serve jobs also launch `scripts/gpu_keepalive.py` alongside the retrieval server (steady ~5% GPU util). **Multi-process mode skips keepalive** — each GPU runs a real BM25 worker instead.
 
 ### Retrieval server health monitoring
 
