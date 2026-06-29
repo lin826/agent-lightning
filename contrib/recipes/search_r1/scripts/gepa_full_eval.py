@@ -246,6 +246,15 @@ def submit_gepa_eval_job(
         logger.info("[DRY RUN] Would submit GEPA full-test eval: %s", tmp_bsub)
         return None
 
+    if os.environ.get("SEARCH_R1_ALLOW_TEST_BSUB") != "1":
+        path_parts = prompt_path.resolve().parts
+        if any(part.startswith("pytest-of") or part.startswith("pytest-") for part in path_parts):
+            logger.warning(
+                "Refusing real bsub for pytest temp path %s (set SEARCH_R1_ALLOW_TEST_BSUB=1 to override)",
+                prompt_path,
+            )
+            return None
+
     result = subprocess.run(f"bsub < {tmp_bsub}", capture_output=True, text=True, shell=True)
     job_match = re.search(r"Job <(\d+)>", result.stdout)
     if job_match:

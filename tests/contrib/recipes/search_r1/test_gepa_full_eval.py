@@ -32,6 +32,18 @@ def mock_save_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(gepa_full_eval, "save_gepa_prompt", fake_save)
 
 
+@pytest.fixture(autouse=True)
+def mock_submit_gepa_eval_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent accidental real ``bsub`` when tests seed state before per-test mocks."""
+
+    def fake_submit(*, dry_run: bool = False, **kwargs: Any) -> str | None:
+        if dry_run:
+            return None
+        return "test-job"
+
+    monkeypatch.setattr(gepa_full_eval, "submit_gepa_eval_job", fake_submit)
+
+
 @pytest.fixture
 def run_dir(tmp_path: Path) -> Path:
     session = gepa_full_eval.start_training_session(tmp_path, fresh=True)
@@ -123,6 +135,7 @@ def test_maybe_trigger_from_metrics_best_score_on_record(
         metric_calls=10,
         program_idx=0,
         prompt=prompt,
+        dry_run=True,
     )
     submitted: list[int] = []
 
