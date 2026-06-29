@@ -12,8 +12,9 @@ Usage:
 Environment:
     RETRIEVAL_SERVER_URL or RETRIEVAL_SERVER_ADDR_FILE — BM25 server (required)
     OPENAI_API_BASE — vLLM OpenAI endpoint for Qwen2.5-3B-Instruct (required)
-    GEPA_MAX_METRIC_CALLS — optimization budget (default: 1500)
+    GEPA_MAX_METRIC_CALLS — optimization budget (default: 60000; train_gepa.bsub sets 60000)
     GEPA_ROLLOUT_CONCURRENCY — parallel Search-R1 rollouts (default: 1; train_gepa.bsub sets 8)
+    GEPA_REFLECTION_MINIBATCH_SIZE — reflection minibatch for gepa.optimize (default: 6)
     GEPA_REFLECTION_LM — litellm model id for reflection (default: same as task LM)
     GEPA_TRAIN_SUBSET — optional cap on hotpotqa train examples for smoke tests
 """
@@ -64,9 +65,9 @@ MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
 DATA_SOURCE = "hotpotqa"
 TRAIN_FILE = "data/train.parquet"
 VAL_FILE = "data/test_dev.parquet"
-DEFAULT_MAX_METRIC_CALLS = 1500
+DEFAULT_MAX_METRIC_CALLS = 60000
 DEFAULT_ROLLOUT_CONCURRENCY = 1
-REFLECTION_MINIBATCH_SIZE = 3
+DEFAULT_REFLECTION_MINIBATCH_SIZE = 6
 
 
 @dataclass(frozen=True)
@@ -119,6 +120,14 @@ def resolve_rollout_concurrency(cli_value: int | None) -> int:
     if os.environ.get("GEPA_ROLLOUT_CONCURRENCY"):
         return max(1, int(os.environ["GEPA_ROLLOUT_CONCURRENCY"]))
     return DEFAULT_ROLLOUT_CONCURRENCY
+
+
+def resolve_reflection_minibatch_size(cli_value: int | None) -> int:
+    if cli_value is not None:
+        return max(1, cli_value)
+    if os.environ.get("GEPA_REFLECTION_MINIBATCH_SIZE"):
+        return max(1, int(os.environ["GEPA_REFLECTION_MINIBATCH_SIZE"]))
+    return DEFAULT_REFLECTION_MINIBATCH_SIZE
 
 
 def load_dataset(data_dir: Path, *, train_subset: int | None = None) -> tuple[list[SearchR1DataInst], list[SearchR1DataInst]]:
@@ -182,6 +191,12 @@ def main() -> None:
         help="Use <rewrite> seed instruction and rewrite turn during rollouts (GRPO rewrite variant)",
     )
     parser.add_argument("--max-metric-calls", type=int, default=None, help="GEPA evaluation budget")
+    parser.add_argument(
+        "--reflection-minibatch-size",
+        type=int,
+        default=None,
+        help="Reflection minibatch size (default: GEPA_REFLECTION_MINIBATCH_SIZE or 6)",
+    )
     parser.add_argument("--train-subset", type=int, default=None, help="Cap train examples (smoke tests)")
     parser.add_argument(
         "--rollout-concurrency",
@@ -201,6 +216,8 @@ def main() -> None:
         max_metric_calls = int(os.environ.get("GEPA_MAX_METRIC_CALLS", str(DEFAULT_MAX_METRIC_CALLS)))
 
     train_subset = args.train_subset
+    reflection_minibatch_size = resolve_reflection_minibatch_size(args.reflection_minibatch_size)
+
     if train_subset is None and os.environ.get("GEPA_TRAIN_SUBSET"):
         train_subset = int(os.environ["GEPA_TRAIN_SUBSET"])
 
@@ -259,6 +276,7 @@ def main() -> None:
         "val_file": VAL_FILE,
         "max_metric_calls": max_metric_calls,
         "rollout_concurrency": rollout_concurrency,
+        "reflection_minibatch_size": reflection_minibatch_size,
         "seed_instruction": seed_instruction[:200],
     }
     wandb_init_kwargs = build_gepa_wandb_init_kwargs(
@@ -280,7 +298,7 @@ def main() -> None:
     logger.info("Seed val/em=%.4f", seed_val_em)
 
     install_gepa_wandb_grpo_compat_patch(
-        reflection_minibatch_size=REFLECTION_MINIBATCH_SIZE,
+        reflection_minibatch_size=reflection_minibatch_size,
         run_dir=args.run_dir,
         eval_job_tag=variant.eval_job_tag,
         eval_addr_file=variant.eval_addr_file,
@@ -324,7 +342,7 @@ def main() -> None:
         adapter=adapter,
         reflection_lm=reflection_lm,
         candidate_selection_strategy="pareto",
-        reflection_minibatch_size=REFLECTION_MINIBATCH_SIZE,
+        reflection_minibatch_size=reflection_minibatch_size,
         max_metric_calls=max_metric_calls,
         use_merge=False,
         use_wandb=True,

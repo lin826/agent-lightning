@@ -44,7 +44,7 @@ To compare **Genetic-Pareto prompt evolution** (GEPA) against GRPO weight update
 bsub < train/train_gepa.bsub
 ```
 
-Optional env vars: `GEPA_MAX_METRIC_CALLS` (default 1500), `GEPA_REFLECTION_LM` (default: same local vLLM endpoint).
+Optional env vars: `GEPA_MAX_METRIC_CALLS` (default 60000), `GEPA_REFLECTION_MINIBATCH_SIZE` (default 6), `GEPA_REFLECTION_LM` (default: same local vLLM endpoint).
 
 **GEPA + rewrite:** same setup but seeds with `INSTRUCTION_FORMAT_REWRITE`, runs a `<rewrite>` turn before search, and optimizes that prompt family. Use dedicated serve/train scripts and output dir:
 
