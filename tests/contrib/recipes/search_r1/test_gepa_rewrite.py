@@ -18,10 +18,16 @@ for _path in (_RECIPE_DIR, _SCRIPTS_DIR):
 from search_r1_agent import INSTRUCTION_FORMAT, INSTRUCTION_FORMAT_REWRITE  # noqa: E402
 from search_r1_gepa.search_r1_gepa_adapter import (  # noqa: E402
     INSTRUCTION_COMPONENT,
+    SearchR1GEPAAdapter,
     default_seed_candidate,
     run_search_r1_rollout,
 )
-from search_r1_gepa.train_gepa import GEPA_VARIANTS, resolve_gepa_variant  # noqa: E402
+from search_r1_gepa.train_gepa import (  # noqa: E402
+    GEPA_VARIANTS,
+    resolve_gepa_variant,
+    resolve_train_temperature,
+    resolve_val_temperature,
+)
 
 
 def test_default_seed_candidate_rewrite_uses_rewrite_instruction() -> None:
@@ -65,3 +71,30 @@ def test_run_search_r1_rollout_rewrite_turn_prepended() -> None:
     assert content.startswith("<rewrite> clearer question </rewrite>")
     assert "<answer> Paris </answer>" in content
     assert len(calls) >= 2
+
+
+def test_resolve_train_temperature_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GEPA_TRAIN_TEMPERATURE", raising=False)
+    assert resolve_train_temperature() == 1.0
+
+
+def test_resolve_val_temperature_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GEPA_VAL_TEMPERATURE", raising=False)
+    assert resolve_val_temperature() == 0.0
+
+
+def test_resolve_temperature_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GEPA_TRAIN_TEMPERATURE", "0.7")
+    monkeypatch.setenv("GEPA_VAL_TEMPERATURE", "0.1")
+    assert resolve_train_temperature() == 0.7
+    assert resolve_val_temperature() == 0.1
+
+
+def test_adapter_eval_mode_selects_temperature() -> None:
+    def fake_llm(_prompt: str, _temperature: float | None) -> str:
+        return ""
+
+    train_adapter = SearchR1GEPAAdapter(fake_llm, eval_mode="train", train_temperature=1.0, val_temperature=0.0)
+    val_adapter = SearchR1GEPAAdapter(fake_llm, eval_mode="val", train_temperature=1.0, val_temperature=0.0)
+    assert train_adapter._temperature() == 1.0
+    assert val_adapter._temperature() == 0.0
