@@ -4,10 +4,10 @@
 
 """FastAPI retrieval server for Search-R1 training and eval.
 
-Supports dense (FAISS + multi-GPU encoder with /search micro-batching), GPU torch BM25
-(bm25_pt row-sharded across GPUs), and CPU BM25 fallbacks (bm25s / pyserini Lucene).
-Exposes ``GET /health``, ``POST /search``, and ``POST /lookup`` for agent rollouts plus
-``POST /retrieve`` for batch Search-R1-style queries.
+Hosts BM25 retrieval on CPU (default ``bm25s``; ``pyserini`` Lucene optional) matching the
+default Search-R1 setup, plus the original dense (FAISS + encoder with /search
+micro-batching) retriever for local dev. Exposes ``GET /health``, ``POST /search``, and
+``POST /lookup`` for agent rollouts plus ``POST /retrieve`` for batch Search-R1-style queries.
 """
 
 from __future__ import annotations
@@ -43,8 +43,6 @@ from numpy.typing import NDArray
 from pydantic import BaseModel
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModel, AutoTokenizer
-
-from torch_bm25_backend import build_torch_bm25_store, torch_bm25_topk
 
 logger = logging.getLogger(__name__)
 
@@ -269,8 +267,6 @@ class Config:
         retrieval_batch_size: int = 128,
         max_process_num: int = 8,
         bm25_backend: str = "bm25s",
-        torch_bm25_device: str = "cuda",
-        torch_bm25_cache_dir: Optional[str] = None,
         search_batch_size: int = 32,
         search_batch_wait_ms: float = 10.0,
     ) -> None:
@@ -288,8 +284,6 @@ class Config:
         self.retrieval_batch_size = retrieval_batch_size
         self.max_process_num = max_process_num
         self.bm25_backend = bm25_backend
-        self.torch_bm25_device = torch_bm25_device
-        self.torch_bm25_cache_dir = torch_bm25_cache_dir
         self.search_batch_size = search_batch_size
         self.search_batch_wait_ms = search_batch_wait_ms
 
@@ -591,64 +585,6 @@ class Bm25sRetriever(BaseRetriever):
         return results[0].split(" | ", 1)[1] if " | " in results[0] else results[0]
 
 
-class TorchBM25Retriever(BaseRetriever):
-    """GPU BM25 via bm25_pt with row-wise multi-GPU sharding (dp=N, tp=1)."""
-
-    def __init__(self, config: Config) -> None:
-        super().__init__(config)
-        jsonl_path = _maybe_extract_jsonl(Path(config.corpus_path))
-        passage_corpus = _load_bm25s_corpus(jsonl_path)
-        cache_dir = Path(config.torch_bm25_cache_dir) if config.torch_bm25_cache_dir else Path(config.index_path).parent / "torch_bm25_index_k1_0.9_b0.4"
-        self._store = build_torch_bm25_store(
-            corpus=passage_corpus,
-            cache_dir=cache_dir,
-            device=config.torch_bm25_device,
-        )
-        self.docs_by_title = self._store.docs_by_title
-
-    def _passages_to_docs(self, passages: List[str]) -> Docs:
-        docs: Docs = []
-        for passage in passages:
-            if " | " in passage:
-                title, text = passage.split(" | ", 1)
-            else:
-                title, text = passage, ""
-            docs.append({"title": title, "text": text, "contents": passage})
-        return docs
-
-    def _search(
-        self, query: str, num: Optional[int] = None, return_score: bool = False
-    ) -> Union[Docs, Tuple[Docs, Scores]]:
-        k = self.topk if num is None else num
-        passages = torch_bm25_topk(self._store, query, k)
-        docs = self._passages_to_docs(passages)
-        if return_score:
-            return docs, [0.0] * len(docs)
-        return docs
-
-    def _batch_search(
-        self, query_list: List[str], num: Optional[int] = None, return_score: bool = False
-    ) -> Union[BatchDocs, Tuple[BatchDocs, BatchScores]]:
-        k = self.topk if num is None else num
-        results: BatchDocs = []
-        scores: BatchScores = []
-        for query in query_list:
-            docs, sc = self._search(query, k, True)  # type: ignore[misc]
-            results.append(docs)  # type: ignore[arg-type]
-            scores.append(sc)  # type: ignore[arg-type]
-        if return_score:
-            return results, scores
-        return results
-
-    def lookup(self, title: str) -> str:
-        if title in self.docs_by_title:
-            return self.docs_by_title[title]
-        results = [p for p in torch_bm25_topk(self._store, title, 10) if p.startswith(title + " | ")]
-        if not results:
-            return f"No Wikipedia page found for title: {title}"
-        return results[0].split(" | ", 1)[1] if " | " in results[0] else results[0]
-
-
 class DenseRetriever(BaseRetriever):
     def __init__(self, config: Config) -> None:
         super().__init__(config)
@@ -657,7 +593,7 @@ class DenseRetriever(BaseRetriever):
         except ImportError as exc:
             raise RuntimeError(
                 "faiss is required for dense retrieval. pip install faiss-gpu (or faiss-cpu), "
-                "or use --retriever_name bm25 / --bm25-backend torch."
+                "or use --retriever_name bm25 / --bm25-backend bm25s."
             ) from exc
         index: Any = faiss.read_index(self.index_path)  # type: ignore[no-untyped-call]
         if config.faiss_gpu:
@@ -737,9 +673,7 @@ class DenseRetriever(BaseRetriever):
 
 
 def get_retriever(config: Config) -> BaseRetriever:
-    if config.retrieval_method in ("bm25", "torch_bm25"):
-        if config.retrieval_method == "torch_bm25" or config.bm25_backend == "torch":
-            return TorchBM25Retriever(config)
+    if config.retrieval_method == "bm25":
         if config.bm25_backend == "lucene":
             return BM25Retriever(config)
         if _is_bm25s_index(config.index_path):
@@ -836,10 +770,6 @@ def resolve_wiki_paths(wiki_dir: str, k1: float = 0.9, b: float = 0.4) -> Tuple[
     return index_path, corpus_path
 
 
-def resolve_torch_bm25_cache(wiki_dir: str, k1: float = 0.9, b: float = 0.4) -> str:
-    return str(Path(wiki_dir) / f"torch_bm25_index_k1_{k1}_b{b}")
-
-
 #####################################
 # FastAPI server below
 #####################################
@@ -874,7 +804,7 @@ def health_endpoint() -> Dict[str, str]:
 
 @app.post("/search")
 def search_endpoint(request: SearchRequest) -> Dict[str, Any]:
-    """Agent rollout endpoint (compatible with ``torch_bm25_server``)."""
+    """Agent rollout endpoint returning formatted Wikipedia passages."""
     assert retriever is not None, "retriever not initialized"
     if search_batcher is not None:
         docs = search_batcher.search(request.query, num=30)
@@ -947,7 +877,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Launch the Search-R1 retrieval server.")
     parser.add_argument("--wiki-dir", type=str, default=None, help="Wiki2017 directory (BM25 corpus + index/cache).")
     parser.add_argument(
-        "--index_path", type=str, default="/home/peterjin/mnt/index/wiki-18/e5_Flat.index", help="Index file or directory."
+        "--index_path",
+        type=str,
+        default="/home/peterjin/mnt/index/wiki-18/e5_Flat.index",
+        help="Index file or directory.",
     )
     parser.add_argument(
         "--corpus_path",
@@ -960,27 +893,17 @@ def main() -> None:
         "--retriever_name",
         type=str,
         default="e5",
-        help="Retriever name ('bm25', 'torch_bm25', or dense model tag such as 'e5').",
+        help="Retriever name ('bm25', or dense model tag such as 'e5').",
     )
-    parser.add_argument("--retriever_model", type=str, default="intfloat/e5-base-v2", help="Dense retriever model path.")
+    parser.add_argument(
+        "--retriever_model", type=str, default="intfloat/e5-base-v2", help="Dense retriever model path."
+    )
     parser.add_argument(
         "--bm25-backend",
         type=str,
-        choices=("torch", "bm25s", "lucene"),
-        default=os.environ.get("BM25_BACKEND", "torch"),
-        help="BM25 implementation when --wiki-dir or retriever_name=bm25 (default: torch GPU).",
-    )
-    parser.add_argument(
-        "--torch-bm25-device",
-        type=str,
-        default=os.environ.get("TORCH_BM25_DEVICE", "cuda"),
-        help="'cuda' shards torch BM25 across all visible GPUs; 'cuda:0' pins one GPU.",
-    )
-    parser.add_argument(
-        "--torch-bm25-cache-dir",
-        type=str,
-        default=None,
-        help="Cache dir for torch BM25 _corpus_scores (default: <wiki-dir>/torch_bm25_index_k1_0.9_b0.4).",
+        choices=("bm25s", "lucene"),
+        default=os.environ.get("BM25_BACKEND", "bm25s"),
+        help="CPU BM25 implementation when --wiki-dir or retriever_name=bm25 (default: bm25s).",
     )
     parser.add_argument(
         "--faiss_gpu",
@@ -1016,13 +939,10 @@ def main() -> None:
     corpus_path = args.corpus_path
     retrieval_method = args.retriever_name
     bm25_backend = args.bm25_backend
-    torch_bm25_cache_dir = args.torch_bm25_cache_dir
     if args.wiki_dir:
         index_path, corpus_path = resolve_wiki_paths(args.wiki_dir)
-        if retrieval_method not in ("bm25", "torch_bm25"):
+        if retrieval_method != "bm25":
             retrieval_method = "bm25"
-        if bm25_backend == "torch":
-            torch_bm25_cache_dir = torch_bm25_cache_dir or resolve_torch_bm25_cache(args.wiki_dir)
         logger.info(
             "Using wiki-dir %s -> index=%s corpus=%s bm25_backend=%s",
             args.wiki_dir,
@@ -1045,8 +965,6 @@ def main() -> None:
         retrieval_batch_size=512,
         max_process_num=int(args.max_process_num),
         bm25_backend=bm25_backend,
-        torch_bm25_device=args.torch_bm25_device,
-        torch_bm25_cache_dir=torch_bm25_cache_dir,
         search_batch_size=int(args.search_batch_size),
         search_batch_wait_ms=float(args.search_batch_wait_ms),
     )
@@ -1072,7 +990,9 @@ def main() -> None:
     if args.addr_file:
         _write_addr_file(args.addr_file, _server_url)
 
-    logger.info("Starting retrieval server at %s (retriever=%s, faiss_gpu=%s)", _server_url, retrieval_method, args.faiss_gpu)
+    logger.info(
+        "Starting retrieval server at %s (retriever=%s, faiss_gpu=%s)", _server_url, retrieval_method, args.faiss_gpu
+    )
     try:
         uvicorn.run(app, host=host, port=port, log_level="info")
     finally:

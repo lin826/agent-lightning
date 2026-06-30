@@ -12,7 +12,7 @@ The example is designed to run on a single node with 8 GPUs, each having at leas
 |------|-------------|
 | `scripts/` | Python entrypoints: `train_search_r1_agent.py`, `eval_search_r1_agent.py`, `eval_gepa_prompt.py`, `monitor_best_and_eval.py`, `monitor_retrieval_servers.py`, `strip_stale_checkpoint_optim.py`, `search_r1_agent.py`, `qa_em.py`, `retrieval_server.py`, `wandb_run.py` |
 | `train/` | LSF bsub scripts for GRPO and GEPA training (`train_qwen3b*.bsub`, `train_gepa.bsub`, `train_gepa_rewrite.bsub`) |
-| `serve/` | LSF bsub scripts for per-variant dense retrieval servers (`serve_retrieval_*.bsub` for training, `serve_retrieval_eval_*.bsub` for eval), shared launch helper (`_retrieval_server_launch.sh`), and optional watchdog (`monitor_retrieval_servers.bsub`) |
+| `serve/` | LSF bsub scripts for per-variant CPU BM25 retrieval servers (`serve_retrieval_*.bsub` for training, `serve_retrieval_eval_*.bsub` for eval), shared launch helper (`_retrieval_server_launch.sh`), and optional watchdog (`monitor_retrieval_servers.bsub`) |
 | `eval/` | Eval bsub templates (`eval_checkpoint.bsub`, `eval_gepa_prompt.bsub`); `eval/generated/` holds monitor-generated one-off eval jobs |
 | `outputs/` | LSF logs (`.out`/`.err`), BM25 addr files, GEPA run state, monitor state |
 | `checkpoints/` | VERL checkpoint roots per experiment variant |
@@ -99,15 +99,11 @@ Do **not** place a shared `wandb_eval_run_id.txt` under `outputs/` or the recipe
 
 When eval pollution or a crashed job leaves the training WandB run ahead of the saved checkpoint, fork a clean run with `scripts/fork_training_wandb_run.py`. **Backfill only through `latest_checkpointed_iteration.txt`**, not through the last step line in the training log — otherwise resumed training re-logs steps that were already backfilled and the curve diverges. With `--checkpoint-dir`, the script defaults `--max-backfill-step` from that file. Update `wandb_run_id.txt` and restart (not hot-swap) the training job so VERL picks up the new id at `wandb.init`.
 
-### Retrieval server parallelism
+### Retrieval server hosting (CPU)
 
-LSF serve jobs request **8× H100 80 GB** (`#BSUB -gpu num=8`) and launch `scripts/retrieval_server.py` via `serve/_retrieval_server_launch.sh`. All `serve/serve_retrieval_*.bsub` scripts export **GPU torch BM25** before sourcing the launch helper (`RETRIEVAL_MODE=bm25`, `BM25_BACKEND=torch`, `TORCH_BM25_DEVICE=cuda`), row-sharded across visible GPUs via bm25_pt.
+BM25 retrieval is hosted on **CPU only**, matching the default Search-R1 setup. LSF serve jobs request **no GPUs** (high `-n` CPU cores + large `rusage[mem]`) and launch `scripts/retrieval_server.py` via `serve/_retrieval_server_launch.sh`. All `serve/serve_retrieval_*.bsub` scripts export `RETRIEVAL_MODE=bm25` and `BM25_BACKEND=bm25s` before sourcing the launch helper. The server reads the prebuilt **bm25s** index under `WIKI` and batch-searches with `--max-process-num` worker threads (`n_threads=1` per query to avoid CPU oversubscription). Pyserini **Lucene** is available as an alternate CPU backend via `BM25_BACKEND=lucene`.
 
-**Dense e5 + FAISS** remains available for local dev (`RETRIEVAL_MODE=dense`, index/corpus under `data/e5_Flat.index` and `data/wiki-18.jsonl`). Dense mode loads **one encoder replica per visible GPU**, shards FAISS with **`--faiss_gpu`**, and **micro-batches concurrent `/search` requests** (`SEARCH_BATCH_SIZE=32`, `SEARCH_BATCH_WAIT_MS=10`) so rollouts fan encode work across all GPUs instead of pinning `cuda:0`.
-
-CPU **bm25s** / Lucene remain available as BM25 backends (`BM25_BACKEND=bm25s|lucene`); bm25s batch search uses outer threads with `n_threads=1` per query to avoid oversubscription.
-
-BM25 serve jobs also launch `scripts/gpu_keepalive.py` alongside the retrieval server. It runs a small matmul on each visible GPU on a fixed duty cycle (default **~5%** utilization via `KEEPALIVE_TARGET_UTIL=0.05`) so idle gaps do not trip cluster GPU reapers, without the prior burst-to-100% sawtooth.
+**Dense e5 + FAISS** remains available for local dev (`RETRIEVAL_MODE=dense`, index/corpus under `data/e5_Flat.index` and `data/wiki-18.jsonl`). Dense mode loads **one encoder replica per visible GPU**, shards FAISS with **`--faiss_gpu`**, and **micro-batches concurrent `/search` requests** (`SEARCH_BATCH_SIZE=32`, `SEARCH_BATCH_WAIT_MS=10`); it is the only path that uses GPUs.
 
 ### Retrieval server health monitoring
 

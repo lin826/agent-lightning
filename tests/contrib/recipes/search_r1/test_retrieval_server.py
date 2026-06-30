@@ -168,14 +168,14 @@ def test_get_retriever_selects_bm25s(tmp_path: Path) -> None:
         mock_cls.assert_called_once_with(cfg)
 
 
-def test_get_retriever_selects_torch_bm25(tmp_path: Path) -> None:
+def test_get_retriever_falls_back_to_lucene_without_bm25s_index(tmp_path: Path) -> None:
     cfg = rs.Config(
         retrieval_method="bm25",
         index_path=str(tmp_path),
         corpus_path=str(tmp_path / "c.jsonl"),
-        bm25_backend="torch",
+        bm25_backend="bm25s",
     )
-    with patch.object(rs, "TorchBM25Retriever", autospec=True) as mock_cls:
+    with patch.object(rs, "BM25Retriever", autospec=True) as mock_cls:
         mock_cls.return_value = MagicMock()
         rs.get_retriever(cfg)
         mock_cls.assert_called_once_with(cfg)
@@ -209,8 +209,3 @@ def test_search_batcher_coalesces_queries() -> None:
     assert len(results) == 4
     titles = {r[0]["title"] for r in results}
     assert titles == {"q0", "q1", "q2", "q3"}
-
-
-def test_resolve_torch_bm25_cache() -> None:
-    path = rs.resolve_torch_bm25_cache("/data/wiki")
-    assert path.endswith("torch_bm25_index_k1_0.9_b0.4")
